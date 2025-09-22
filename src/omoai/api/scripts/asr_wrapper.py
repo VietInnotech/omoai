@@ -14,9 +14,10 @@ from pathlib import Path
 
 try:
     # Prefer centralized config; fall back gracefully if unavailable
-    from omoai.config.schemas import get_config  # type: ignore
+    from omoai.config.schemas import get_config, load_config  # type: ignore
 except (ImportError, AttributeError):  # pragma: no cover - defensive import
     get_config = None  # type: ignore
+    load_config = None  # type: ignore
 
 from omoai.api.exceptions import AudioProcessingException
 
@@ -35,10 +36,31 @@ def run_asr_script(
     """
     audio_path = str(audio_path)
     output_path = str(output_path)
+    cfg = None
+    engine = "chunkformer"
+
+    if config_path and load_config is not None:
+        try:
+            cfg = load_config(config_path)
+        except Exception:
+            cfg = None
+    elif get_config is not None:
+        try:
+            cfg = get_config()
+        except Exception:
+            cfg = None
+
+    if cfg is not None:
+        try:
+            engine = getattr(cfg.asr, "engine", "chunkformer")
+        except Exception:
+            engine = "chunkformer"
+
+    module_name = "scripts.asr_whisperx" if engine == "whisperx" else "scripts.asr"
     cmd = [
         sys.executable,
         "-m",
-        "scripts.asr",
+        module_name,
         "--audio",
         audio_path,
         "--out",
@@ -60,6 +82,8 @@ def run_asr_script(
     except (AttributeError, TypeError):
         stream = False
     env = os.environ.copy()
+    if config_path:
+        env["OMOAI_CONFIG"] = str(config_path)
     if stream:
         # Encourage unbuffered output from the child
         env.setdefault("PYTHONUNBUFFERED", "1")

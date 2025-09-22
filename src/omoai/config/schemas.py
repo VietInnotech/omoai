@@ -162,9 +162,105 @@ class PathsConfig(BaseModel):
         return v
 
 
+class WhisperXConfig(BaseModel):
+    """Backend configuration for WhisperX / faster-whisper."""
+
+    model_path: Path = Field(
+        default=Path("models/whisperx/EraX"),
+        description="Path to the local CTranslate2 WhisperX model directory.",
+    )
+    device: Literal["cpu", "cuda", "auto"] = Field(
+        default="auto",
+        description="Device to run WhisperX on (auto resolves to cuda if available).",
+    )
+    compute_type: Literal["float16", "float32", "int8", "int8_float16"] = Field(
+        default="int8_float16",
+        description="CTranslate2 compute type for the WhisperX model.",
+    )
+    language: str | Literal["auto"] = Field(
+        default="vi",
+        description="Target language for decoding (or auto).",
+    )
+    beam_size: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        description="Beam size passed to WhisperX decoding.",
+    )
+    temperature: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=2.0,
+        description="Sampling temperature forwarded to faster-whisper.",
+    )
+    temperature_schedule: list[float] | None = Field(
+        default=None,
+        description="Optional fallback temperature schedule (list of temperatures).",
+    )
+    temperature_increment_on_fallback: float = Field(
+        default=0.2,
+        ge=0.0,
+        le=1.0,
+        description="Temperature increment used when sampling falls back.",
+    )
+    compression_ratio_threshold: float | None = Field(
+        default=2.4,
+        ge=0.0,
+        description="Skip segments whose compression ratio exceeds this threshold.",
+    )
+    logprob_threshold: float | None = Field(
+        default=-1.0,
+        description="Skip segments whose average log probability falls below this threshold.",
+    )
+    no_speech_threshold: float | None = Field(
+        default=0.6,
+        ge=0.0,
+        le=1.0,
+        description="Skip segments when no-speech probability exceeds this threshold.",
+    )
+    max_chunk_duration_s: float | None = Field(
+        default=None,
+        ge=60.0,
+        le=7200.0,
+        description="Force-split long windows into chunks no longer than this duration (seconds).",
+    )
+    vad_method: Literal["silero", "pyannote"] = Field(
+        default="silero",
+        description="Voice activity detector used by WhisperX.",
+    )
+    vad_onset: float = Field(
+        default=0.50,
+        ge=0.0,
+        le=1.0,
+        description="VAD onset threshold forwarded to WhisperX.",
+    )
+    vad_offset: float = Field(
+        default=0.363,
+        ge=0.0,
+        le=1.0,
+        description="VAD offset threshold forwarded to WhisperX.",
+    )
+
+    @field_validator("device")
+    @classmethod
+    def resolve_device(cls, value: str) -> str:
+        if value == "auto":
+            try:
+                import torch
+
+                return "cuda" if torch.cuda.is_available() else "cpu"
+            except (ImportError, RuntimeError):
+                return "cpu"
+        return value
+
+
 class ASRConfig(BaseModel):
     """Configuration for Automatic Speech Recognition."""
 
+    engine: Literal["chunkformer", "whisperx"] = Field(
+        default="chunkformer",
+        description="ASR backend engine to use (chunkformer | whisperx).",
+    )
     total_batch_duration_s: int = Field(
         default=1800,
         ge=60,  # Minimum 1 minute
@@ -196,6 +292,10 @@ class ASRConfig(BaseModel):
     autocast_dtype: Literal["fp32", "bf16", "fp16"] | None = Field(
         default="fp16",
         description="Autocast dtype for mixed precision",
+    )
+    whisperx: WhisperXConfig = Field(
+        default_factory=WhisperXConfig,
+        description="Configuration block for WhisperX backend.",
     )
 
     @field_validator("device")
@@ -496,6 +596,26 @@ class TranscriptOutputConfig(BaseModel):
     wrap_width: int = Field(
         default=100, ge=0, description="Text wrapping width (0 = no wrapping)"
     )
+    subtitle_max_chars_per_line: int = Field(
+        default=42,
+        ge=20,
+        le=120,
+        description="Maximum characters per subtitle line (0 disables wrapping)",
+    )
+    subtitle_max_lines: int = Field(
+        default=2,
+        ge=1,
+        le=4,
+        description="Maximum number of lines per subtitle cue",
+    )
+    subtitle_highlight_words: bool = Field(
+        default=False,
+        description="Embed word-level highlight markup in subtitle outputs",
+    )
+    subtitle_complex_languages: list[str] = Field(
+        default_factory=lambda: ["zh", "ja", "ko"],
+        description="Languages that prefer character-based subtitle wrapping",
+    )
 
     # Filenames (when writing to disk)
     file_raw: str = Field(default="transcript.raw.txt")
@@ -503,6 +623,7 @@ class TranscriptOutputConfig(BaseModel):
     file_srt: str = Field(default="transcript.srt")
     file_vtt: str = Field(default="transcript.vtt")
     file_segments: str = Field(default="segments.json")
+    file_tsv: str = Field(default="transcript.tsv")
 
 
 class SummaryOutputConfig(BaseModel):
@@ -521,7 +642,7 @@ class APIDefaultsConfig(BaseModel):
     Mirrors OutputFormatParams so admin can configure default includes.
     """
 
-    formats: list[Literal["json", "text", "srt", "vtt", "md"]] | None = None
+    formats: list[Literal["json", "text", "txt", "srt", "vtt", "tsv", "md"]] | None = None
     include: list[Literal["transcript_raw", "transcript_punct", "segments", "timestamped_summary", "summary"]] | None = None
     ts: Literal["none", "s", "ms", "clock"] | None = None
     summary: Literal["bullets", "abstract", "both", "none"] | None = None
@@ -549,7 +670,7 @@ class OutputConfig(BaseModel):
     wrap_width: int = Field(default=0, ge=0)
 
     # Structured configuration for programmatic outputs
-    formats: list[Literal["json", "text", "srt", "vtt", "md"]] = Field(
+    formats: list[Literal["json", "text", "txt", "srt", "vtt", "tsv", "md"]] = Field(
         default_factory=lambda: ["json"],
         description="Which formats to generate",
     )

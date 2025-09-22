@@ -27,7 +27,7 @@ from omoai.pipeline.postprocess_core_utils import (
 # Instead of raising ImportError (which breaks vLLM internal spawned workers),
 # we set a flag that can be inspected if needed. Dynamic imports from pipeline
 # utilities should be removed; those callers should rely on the subprocess path.
-SAFE_SCRIPT_IMPORT = (__name__ != "__main__")
+SAFE_SCRIPT_IMPORT = __name__ != "__main__"
 
 try:  # optional torch for CUDA cache clearing; not required in dry-run
     import torch  # type: ignore
@@ -54,6 +54,7 @@ except ImportError:  # pragma: no cover - keep runnable without tqdm
 # Defer vLLM import until inside build_llm() after multiprocessing start method is safely set.
 VLLM_AVAILABLE: bool | None = None  # resolved lazily in main()
 
+
 # Placeholder SamplingParams (never used before real vLLM import; kept to satisfy type references)
 class SamplingParams:  # type: ignore
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -69,6 +70,7 @@ def save_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
 
 def load_asr_top_level(path: Path) -> dict[str, Any]:
     """Read only top-level keys of an ASR JSON using ijson if available.
@@ -122,7 +124,9 @@ def apply_chat_template(llm: Any, messages: list[dict[str, str]]) -> str:
         tmpl = getattr(tokenizer, "chat_template", None)
         if tmpl:
             return tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True,
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
             )
     except (ValueError, KeyError, TypeError):
         pass
@@ -145,14 +149,21 @@ def apply_chat_template(llm: Any, messages: list[dict[str, str]]) -> str:
     return "\n\n".join(parts)
 
 
-def generate_chat(llm: Any, messages: list[dict[str, str]], temperature: float, max_tokens: int) -> str:
+def generate_chat(
+    llm: Any, messages: list[dict[str, str]], temperature: float, max_tokens: int
+) -> str:
     prompt = apply_chat_template(llm, messages)
     params = SamplingParams(temperature=temperature, max_tokens=max_tokens)
     outputs = llm.generate([prompt], params)
     return outputs[0].outputs[0].text
 
 
-def generate_chat_batch(llm: Any, list_of_messages: list[list[dict[str, str]]], temperature: float, max_tokens: int) -> list[str]:
+def generate_chat_batch(
+    llm: Any,
+    list_of_messages: list[list[dict[str, str]]],
+    temperature: float,
+    max_tokens: int,
+) -> list[str]:
     """Batched chat generation for multiple prompts to improve throughput."""
     if not list_of_messages:
         return []
@@ -162,12 +173,21 @@ def generate_chat_batch(llm: Any, list_of_messages: list[list[dict[str, str]]], 
     return [o.outputs[0].text if o.outputs else "" for o in outputs]
 
 
-def _compute_input_token_limit(max_model_len: int, prompt_overhead_tokens: int = 128, output_margin_tokens: int = 128) -> int:
+def _compute_input_token_limit(
+    max_model_len: int,
+    prompt_overhead_tokens: int = 128,
+    output_margin_tokens: int = 128,
+) -> int:
     """Conservative upper bound for input tokens so total prompt + output fits model context."""
-    return max(256, int(max_model_len) - int(prompt_overhead_tokens) - int(output_margin_tokens))
+    return max(
+        256,
+        int(max_model_len) - int(prompt_overhead_tokens) - int(output_margin_tokens),
+    )
 
 
-def _split_text_by_token_budget(llm: Any, text: str, max_input_tokens: int) -> list[str]:
+def _split_text_by_token_budget(
+    llm: Any, text: str, max_input_tokens: int
+) -> list[str]:
     """Split text into chunks whose tokenized length is <= max_input_tokens.
 
     Uses the model tokenizer to split exactly on token boundaries to guarantee
@@ -196,7 +216,9 @@ def _split_text_by_token_budget(llm: Any, text: str, max_input_tokens: int) -> l
         return split_text_into_chunks(text, max_chars=approx_chars, overlap_sentences=1)
 
 
-def _split_text_by_token_budget_with_counts(llm: Any, text: str, max_input_tokens: int) -> list[tuple[str, int]]:
+def _split_text_by_token_budget_with_counts(
+    llm: Any, text: str, max_input_tokens: int
+) -> list[tuple[str, int]]:
     """Return list of (chunk_text, token_count) within token budget to avoid re-encoding."""
     if not text:
         return []
@@ -217,7 +239,9 @@ def _split_text_by_token_budget_with_counts(llm: Any, text: str, max_input_token
         return out
     except (ValueError, KeyError, TypeError):
         approx_chars = max(500, int(max_input_tokens * 4))
-        chunks = split_text_into_chunks(text, max_chars=approx_chars, overlap_sentences=1)
+        chunks = split_text_into_chunks(
+            text, max_chars=approx_chars, overlap_sentences=1
+        )
         return [(c, max(1, len(c) // 3)) for c in chunks]
 
 
@@ -249,7 +273,9 @@ def punctuate_text_with_splitting(
         return ""
     per_piece_max: list[int] = []
     for _, tokens_in in parts_counts:
-        per_piece_max.append(max(64, min(int(max_model_len) - 64, int(tokens_in) + 128)))
+        per_piece_max.append(
+            max(64, min(int(max_model_len) - 64, int(tokens_in) + 128))
+        )
 
     pieces_only = [p for p, _ in parts_counts]
     if batch_prompts <= 1:
@@ -282,10 +308,19 @@ def punctuate_text_with_splitting(
         group_max_tokens = max(per_piece_max[i] for i in idxs)
         list_of_messages: list[list[dict[str, str]]] = []
         for i in idxs:
-            list_of_messages.append([
-                {"role": "system", "content": system_prompt},
-                ({"role": "user", "content": f"{user_prompt}\n\n{pieces_only[i]}" } if user_prompt else {"role": "user", "content": pieces_only[i] }),
-            ])
+            list_of_messages.append(
+                [
+                    {"role": "system", "content": system_prompt},
+                    (
+                        {
+                            "role": "user",
+                            "content": f"{user_prompt}\n\n{pieces_only[i]}",
+                        }
+                        if user_prompt
+                        else {"role": "user", "content": pieces_only[i]}
+                    ),
+                ]
+            )
         group_outs = generate_chat_batch(
             llm,
             list_of_messages,
@@ -297,7 +332,15 @@ def punctuate_text_with_splitting(
         start = end
     return " ".join(s.strip() for s in out_texts if s is not None).strip()
 
-def punctuate_text(llm: Any, text: str, system_prompt: str, max_tokens: int | None = None, temperature: float = 0.0, user_prompt: str | None = None) -> str:
+
+def punctuate_text(
+    llm: Any,
+    text: str,
+    system_prompt: str,
+    max_tokens: int | None = None,
+    temperature: float = 0.0,
+    user_prompt: str | None = None,
+) -> str:
     if not text:
         return ""
     system = system_prompt
@@ -317,7 +360,9 @@ def punctuate_text(llm: Any, text: str, system_prompt: str, max_tokens: int | No
             max_tokens = min(4096, len(tokenizer.encode(user_content)) + 64)
         except (ValueError, KeyError, TypeError):
             max_tokens = 1024
-    return generate_chat(llm, messages, temperature=temperature, max_tokens=int(max_tokens))
+    return generate_chat(
+        llm, messages, temperature=temperature, max_tokens=int(max_tokens)
+    )
 
 
 def _parse_structured_summary(text: str) -> dict:
@@ -346,18 +391,38 @@ def _parse_structured_summary(text: str) -> dict:
             continue
         lower = line.lower()
         # Common heading markers (English and Vietnamese)
-        if lower.startswith("title:") or lower.startswith("# ") or lower.startswith("title -") or lower.startswith("tiêu đề:"):
-            title = line.split(":", 1)[-1].strip() if ":" in line else line.lstrip("# ").strip()
+        if (
+            lower.startswith("title:")
+            or lower.startswith("# ")
+            or lower.startswith("title -")
+            or lower.startswith("tiêu đề:")
+        ):
+            title = (
+                line.split(":", 1)[-1].strip()
+                if ":" in line
+                else line.lstrip("# ").strip()
+            )
             mode = "summary"
             continue
-        if lower.startswith("summary:") or lower.startswith("abstract:") or lower.startswith("summary -") or lower.startswith("tóm tắt:"):
+        if (
+            lower.startswith("summary:")
+            or lower.startswith("abstract:")
+            or lower.startswith("summary -")
+            or lower.startswith("tóm tắt:")
+        ):
             mode = "summary"
             # take text after colon if present
             after = line.split(":", 1)
             if len(after) > 1 and after[1].strip():
                 abstract_lines.append(after[1].strip())
             continue
-        if lower.startswith("points:") or lower.startswith("bullets:") or lower.startswith("key points:") or lower.startswith("items:") or lower.startswith("điểm chính:"):
+        if (
+            lower.startswith("points:")
+            or lower.startswith("bullets:")
+            or lower.startswith("key points:")
+            or lower.startswith("items:")
+            or lower.startswith("điểm chính:")
+        ):
             mode = "points"
             # take trailing content on same line after colon
             after = line.split(":", 1)
@@ -371,7 +436,12 @@ def _parse_structured_summary(text: str) -> dict:
                     points.append(pts)
             continue
         # Bullet detection
-        if line.startswith("- ") or line.startswith("* ") or line.startswith("• ") or (line[0:2].isdigit() and line[2:3] == "."):
+        if (
+            line.startswith("- ")
+            or line.startswith("* ")
+            or line.startswith("• ")
+            or (line[0:2].isdigit() and line[2:3] == ".")
+        ):
             bullet = line.lstrip("-*• ").strip()
             points.append(bullet)
             mode = "points"
@@ -394,7 +464,13 @@ def _parse_structured_summary(text: str) -> dict:
     return {"title": title, "abstract": abstract, "bullets": points}
 
 
-def summarize_text(llm: Any, text: str, system_prompt: str, temperature: float = 0.2, user_prompt: str | None = None) -> dict:
+def summarize_text(
+    llm: Any,
+    text: str,
+    system_prompt: str,
+    temperature: float = 0.2,
+    user_prompt: str | None = None,
+) -> dict:
     """
     Call the LLM to summarize and parse the multi-line structured string into a dict.
     Returns a dict with keys: title, abstract, bullets.
@@ -418,10 +494,13 @@ def summarize_text(llm: Any, text: str, system_prompt: str, temperature: float =
     parsed_with_raw = dict(parsed)
     parsed_with_raw["raw"] = raw
     return parsed_with_raw
+
+
 def prepare_timestamp_context(segments: list[dict]) -> str:
     """
     Create a numbered and timestamped transcript string from ASR segments.
     """
+
     def _format_timestamp(seconds: float) -> str:
         """Format seconds into [MM:SS] string for LLM prompt."""
         if seconds is None:
@@ -452,7 +531,7 @@ def prepare_timestamp_context(segments: list[dict]) -> str:
             continue
         for word in words:
             if "start" in word and "end" in word:
-                start_time = _format_timestamp(word['start'])
+                start_time = _format_timestamp(word["start"])
                 timestamped_transcript.append(
                     f"{word_counter}. {start_time} {word['word']}"
                 )
@@ -472,12 +551,16 @@ def prepare_sentence_timestamp_lines(segments: list[dict]) -> str:
         words = seg.get("word_segments") or seg.get("words") or []
         if words:
             first = next((w for w in words if "start" in w), None)
-            start_s = float(first["start"]) if first else float(seg.get("start", 0.0) or 0.0)
+            start_s = (
+                float(first["start"]) if first else float(seg.get("start", 0.0) or 0.0)
+            )
         else:
             start_s = float(seg.get("start", 0.0) or 0.0)
 
         # Prefer punctuated if available, else raw
-        text = (seg.get("text_punct") or seg.get("text_raw") or seg.get("text") or "").strip()
+        text = (
+            seg.get("text_punct") or seg.get("text_raw") or seg.get("text") or ""
+        ).strip()
         if not text:
             continue
 
@@ -489,7 +572,13 @@ def prepare_sentence_timestamp_lines(segments: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def pack_sentence_lines_to_budget(llm: Any, lines_text: str, max_model_len: int, out_margin: int = 128, overhead: int = 64) -> list[str]:
+def pack_sentence_lines_to_budget(
+    llm: Any,
+    lines_text: str,
+    max_model_len: int,
+    out_margin: int = 128,
+    overhead: int = 64,
+) -> list[str]:
     """Pack sentence lines into chunks that fit token budget.
 
     Returns list of chunk strings, each fitting within the input limit.
@@ -532,18 +621,27 @@ def pack_sentence_lines_to_budget(llm: Any, lines_text: str, max_model_len: int,
         logger.debug(f"Token packing failed: {e}")
         # Fallback: split by character count
         approx_chars = max(500, int(max_model_len * 3))  # rough char-to-token ratio
-        return split_text_into_chunks(lines_text, max_chars=approx_chars, overlap_sentences=0)
+        return split_text_into_chunks(
+            lines_text, max_chars=approx_chars, overlap_sentences=0
+        )
 
 
-def generate_timestamped_summary(llm: Any, timestamped_transcript: str, system_prompt: str) -> str:
+def generate_timestamped_summary(
+    llm: Any, timestamped_transcript: str, system_prompt: str
+) -> str:
     """
     Generate a summary with timestamps from the LLM.
     """
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Please create a summary of the following transcript:\n\n{timestamped_transcript}"},
+        {
+            "role": "user",
+            "content": f"Please create a summary of the following transcript:\n\n{timestamped_transcript}",
+        },
     ]
     return generate_chat(llm, messages, temperature=0.2, max_tokens=800)
+
+
 def parse_llm_response(response_text: str, include_raw: bool = False) -> dict:
     """
     Parse the LLM response to extract the summary and timestamps.
@@ -560,7 +658,7 @@ def parse_llm_response(response_text: str, include_raw: bool = False) -> dict:
     def _parse_time_to_seconds(time_str: str) -> float:
         """Convert [MM:SS] or [HH:MM:SS] string to seconds."""
         try:
-            parts = time_str.strip('[]').split(':')
+            parts = time_str.strip("[]").split(":")
             if len(parts) == 2:  # [MM:SS]
                 m, s = map(int, parts)
                 return m * 60 + s
@@ -618,7 +716,10 @@ def parse_llm_response(response_text: str, include_raw: bool = False) -> dict:
             f"{_format_timestamp(item['start'])} {item['text']}" for item in timestamps
         ).strip()
         result = {"summary_text": summary_text, "timestamps": timestamps}
-        if include_raw and (response_text or "").strip() != (summary_text or "").strip():
+        if (
+            include_raw
+            and (response_text or "").strip() != (summary_text or "").strip()
+        ):
             result["raw"] = response_text
         return result
 
@@ -632,14 +733,17 @@ def parse_llm_response(response_text: str, include_raw: bool = False) -> dict:
         line_end = summary_text.find("\n", m.end())
         if line_end == -1:
             line_end = len(summary_text)
-        segment = summary_text[m.end():line_end]
+        segment = summary_text[m.end() : line_end]
         text = segment.strip()
         timestamps.append({"text": text, "start": start_time})
         # Normalize time format inside summary_text
         summary_text = summary_text.replace(m.group(0), _format_timestamp(start_time))
 
     result = {"summary_text": summary_text.strip(), "timestamps": timestamps}
-    if include_raw and (response_text or "").strip() != (result["summary_text"] or "").strip():
+    if (
+        include_raw
+        and (response_text or "").strip() != (result["summary_text"] or "").strip()
+    ):
         result["raw"] = response_text
     return result
 
@@ -673,6 +777,7 @@ def join_punctuated_segments(
                 if ends_with_term:
                     return sents, ""
                 return sents[:-1], sents[-1] if sents else ""
+
             extractor_fn = _vi_extractor
     if extractor_fn is None:
         # Use a forward-search matcher to avoid variable-length lookbehind
@@ -689,6 +794,7 @@ def join_punctuated_segments(
                 last_cut = end_idx
             tail = text[last_cut:]
             return sentences, tail
+
         extractor_fn = _default_extractor
 
     out_sentences: list[str] = []
@@ -782,13 +888,15 @@ def _join_tokens_with_spacing(tokens: list[str]) -> str:
             continue
         if tok in _PUNCT_CHARS:
             # Attach punctuation to previous token without extra space
-            out[-1] = (out[-1] + tok)
+            out[-1] = out[-1] + tok
         else:
             out.append(" " + tok)
     return "".join(out)
 
 
-def _force_preserve_with_alignment(original_text: str, llm_text: str, adopt_case: bool = True) -> str:
+def _force_preserve_with_alignment(
+    original_text: str, llm_text: str, adopt_case: bool = True
+) -> str:
     """Keep original words order/content; adopt punctuation and optionally case from LLM.
 
     Corrected behavior:
@@ -889,21 +997,34 @@ def _distribute_punct_to_segments(
         return out_segments
 
     # Get original segments with text
-    text_segments = [(i, s) for i, s in enumerate(segments) if (s.get("text_raw") or s.get("text") or "").strip()]
+    text_segments = [
+        (i, s)
+        for i, s in enumerate(segments)
+        if (s.get("text_raw") or s.get("text") or "").strip()
+    ]
     if not text_segments:
         return [dict(s) for s in segments]
 
     # Create concatenated original text
-    original_concat = " ".join((s.get("text_raw") or s.get("text") or "").strip() for _, s in text_segments)
+    original_concat = " ".join(
+        (s.get("text_raw") or s.get("text") or "").strip() for _, s in text_segments
+    )
     original_words = _split_words(original_concat)
     punct_words = _split_words(punctuated_text)
 
     # If word counts match exactly, use precise distribution
     if len(original_words) == len(punct_words):
-        return _distribute_exact_match(punctuated_text, segments, keep_nonempty_segments=keep_nonempty_segments)
+        return _distribute_exact_match(
+            punctuated_text, segments, keep_nonempty_segments=keep_nonempty_segments
+        )
 
     # Handle word count mismatch with fuzzy alignment
-    return _distribute_fuzzy_match(punctuated_text, segments, original_concat, keep_nonempty_segments=keep_nonempty_segments)
+    return _distribute_fuzzy_match(
+        punctuated_text,
+        segments,
+        original_concat,
+        keep_nonempty_segments=keep_nonempty_segments,
+    )
 
 
 def _distribute_exact_match(
@@ -912,7 +1033,10 @@ def _distribute_exact_match(
     keep_nonempty_segments: bool = False,
 ) -> list[dict[str, Any]]:
     """Distribute when word counts match exactly."""
-    seg_word_counts = [len(_split_words((s.get("text_raw") or s.get("text") or "").strip())) for s in segments]
+    seg_word_counts = [
+        len(_split_words((s.get("text_raw") or s.get("text") or "").strip()))
+        for s in segments
+    ]
     words_punct = _split_words(punctuated_text)
 
     out_segments: list[dict[str, Any]] = []
@@ -959,12 +1083,18 @@ def _distribute_fuzzy_match(
                 out_segments.append({**s, "text_punct": _add_basic_punctuation(raw)})
             else:
                 out_segments.append({**s, "text_punct": ""})
-        print("[punct-align] fuzzy: empty punctuated_text; emitted fallback =", keep_nonempty_segments)
+        print(
+            "[punct-align] fuzzy: empty punctuated_text; emitted fallback =",
+            keep_nonempty_segments,
+        )
         return out_segments
 
     # Build original word list and per-segment word counts
     orig_words = _split_words(original_concat)
-    seg_word_counts: list[int] = [len(_split_words((s.get("text_raw") or s.get("text") or "").strip())) for s in segments]
+    seg_word_counts: list[int] = [
+        len(_split_words((s.get("text_raw") or s.get("text") or "").strip()))
+        for s in segments
+    ]
 
     if not orig_words:
         return [dict(s) for s in segments]
@@ -1061,9 +1191,13 @@ def _distribute_fuzzy_match(
         word_cursor += cnt
         if not seg_tokens:
             # Log and optionally fallback
-            print(f"[punct-align] empty_map seg={seg_idx} cnt={cnt} keep_nonempty={keep_nonempty_segments}")
+            print(
+                f"[punct-align] empty_map seg={seg_idx} cnt={cnt} keep_nonempty={keep_nonempty_segments}"
+            )
             if keep_nonempty_segments and raw_text:
-                out_segments.append({**s, "text_punct": _add_basic_punctuation(raw_text)})
+                out_segments.append(
+                    {**s, "text_punct": _add_basic_punctuation(raw_text)}
+                )
             else:
                 out_segments.append({**s, "text_punct": ""})
         else:
@@ -1085,13 +1219,16 @@ def _add_basic_punctuation(text: str) -> str:
     text = text[0].upper() + text[1:] if len(text) > 1 else text.upper()
 
     # Add period at end if no punctuation
-    if text[-1] not in '.!?':
-        text += '.'
+    if text[-1] not in ".!?":
+        text += "."
 
     return text
 
+
 # --- Character-level alignment and quality metrics ---
-def _align_chars(orig_word: str, llm_word: str) -> tuple[list[str], list[str], list[str]]:
+def _align_chars(
+    orig_word: str, llm_word: str
+) -> tuple[list[str], list[str], list[str]]:
     """Align characters between two words using SequenceMatcher.
     Returns: (orig_chars, llm_chars, tags) where tags are 'equal', 'replace', 'delete', 'insert'
     """
@@ -1114,11 +1251,11 @@ def _compute_wer(orig_words: list[str], llm_words: list[str]) -> float:
     edits = 0
     insertions = 0
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
-        if tag == 'replace':
+        if tag == "replace":
             edits += max(i2 - i1, j2 - j1)
-        elif tag == 'delete':
+        elif tag == "delete":
             edits += i2 - i1
-        elif tag == 'insert':
+        elif tag == "insert":
             edits += j2 - j1
             insertions += j2 - j1
     # Use (number of edits) / (number of words in reference + number of insertions)
@@ -1134,11 +1271,11 @@ def _compute_cer(orig_text: str, llm_text: str) -> float:
     sm = SequenceMatcher(None, orig_text, llm_text)
     s = d = i = 0
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
-        if tag == 'replace':
+        if tag == "replace":
             s += max(i2 - i1, j2 - j1)
-        elif tag == 'delete':
+        elif tag == "delete":
             d += i2 - i1
-        elif tag == 'insert':
+        elif tag == "insert":
             i += j2 - j1
     n = len(orig_text)
     return (s + d + i) / n
@@ -1153,11 +1290,11 @@ def _compute_per(orig_text: str, llm_text: str) -> float:
     sm = SequenceMatcher(None, orig_punct, llm_punct)
     s = d = i = 0
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
-        if tag == 'replace':
+        if tag == "replace":
             s += max(i2 - i1, j2 - j1)
-        elif tag == 'delete':
+        elif tag == "delete":
             d += i2 - i1
-        elif tag == 'insert':
+        elif tag == "insert":
             i += j2 - j1
     n = len(orig_punct)
     return (s + d + i) / n
@@ -1166,8 +1303,8 @@ def _compute_per(orig_text: str, llm_text: str) -> float:
 def _compute_uwer_fwer(orig_text: str, llm_text: str) -> tuple[float, float]:
     """Compute Unpunctuated WER (U-WER) and Formatted WER (F-WER)."""
     # Remove punctuation for U-WER
-    orig_no_punct = ''.join(c for c in orig_text if c not in _PUNCT_CHARS)
-    llm_no_punct = ''.join(c for c in llm_text if c not in _PUNCT_CHARS)
+    orig_no_punct = "".join(c for c in orig_text if c not in _PUNCT_CHARS)
+    llm_no_punct = "".join(c for c in llm_text if c not in _PUNCT_CHARS)
     orig_words_u = _split_words(orig_no_punct)
     llm_words_u = _split_words(llm_no_punct)
     uwer = _compute_wer(orig_words_u, llm_words_u)
@@ -1185,14 +1322,14 @@ def _generate_human_readable_diff(orig_text: str, llm_text: str) -> str:
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
         orig_seg = orig_text[i1:i2]
         llm_seg = llm_text[j1:j2]
-        if tag == 'equal':
+        if tag == "equal":
             diff_lines.append(f"  {orig_seg}")
-        elif tag == 'replace':
+        elif tag == "replace":
             diff_lines.append(f"- {orig_seg}")
             diff_lines.append(f"+ {llm_seg}")
-        elif tag == 'delete':
+        elif tag == "delete":
             diff_lines.append(f"- {orig_seg}")
-        elif tag == 'insert':
+        elif tag == "insert":
             diff_lines.append(f"+ {llm_seg}")
     return "\n".join(diff_lines)
 
@@ -1208,7 +1345,9 @@ def _segmentwise_punctuate_segments(
     show_progress: bool = False,
 ) -> list[dict[str, Any]]:
     """Punctuate each segment independently using the LLM (batched for throughput)."""
-    non_empty_indices: list[int] = [i for i, s in enumerate(segments) if (s.get("text_raw") or "").strip()]
+    non_empty_indices: list[int] = [
+        i for i, s in enumerate(segments) if (s.get("text_raw") or "").strip()
+    ]
     if not non_empty_indices:
         return [dict(s) for s in segments]
     messages: list[list[dict[str, str]]] = []
@@ -1223,14 +1362,18 @@ def _segmentwise_punctuate_segments(
             user_content = f"{user_prompt}\n\n{raw}"
         else:
             user_content = raw
-        messages.append([
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
-        ])
+        messages.append(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ]
+        )
         if tokenizer is not None:
             with suppress(Exception):
                 t_in = len(tokenizer.encode(raw))
-                per_piece_max.append(max(64, min(int(max_model_len) - 64, int(t_in) + 128)))
+                per_piece_max.append(
+                    max(64, min(int(max_model_len) - 64, int(t_in) + 128))
+                )
                 continue
         per_piece_max.append(512)
     # Run in groups
@@ -1244,7 +1387,9 @@ def _segmentwise_punctuate_segments(
         end = min(start + int(max(1, batch_prompts)), len(non_empty_indices))
         group_msgs = messages[start:end]
         group_max = max(per_piece_max[start:end]) if per_piece_max else 512
-        group_out = generate_chat_batch(llm, group_msgs, temperature=temperature, max_tokens=int(group_max))
+        group_out = generate_chat_batch(
+            llm, group_msgs, temperature=temperature, max_tokens=int(group_max)
+        )
         for j, text in enumerate(group_out):
             outputs[start + j] = text or ""
         if pbar is not None:
@@ -1278,7 +1423,9 @@ def _safe_distribute_punct_to_segments(
     - When keep_nonempty_segments is True: apply gentle fallback to avoid empty text_punct
       by minimally punctuating the original segment text.
     """
-    return _distribute_punct_to_segments(punctuated_text, segments, keep_nonempty_segments=keep_nonempty_segments)
+    return _distribute_punct_to_segments(
+        punctuated_text, segments, keep_nonempty_segments=keep_nonempty_segments
+    )
 
 
 def _build_segment_batches_by_token_budget(
@@ -1317,7 +1464,11 @@ def _build_segment_batches_by_token_budget(
             # Force progress to avoid infinite loop on empty texts
             j = max(j, i + 1)
         start_time = segments[i].get("start")
-        end_time = segments[j - 1].get("end") if j - 1 < len(segments) else segments[-1].get("end")
+        end_time = (
+            segments[j - 1].get("end")
+            if j - 1 < len(segments)
+            else segments[-1].get("end")
+        )
         batches.append(
             {
                 "start_idx": i,
@@ -1332,8 +1483,11 @@ def _build_segment_batches_by_token_budget(
     return batches
 
 
-def split_text_into_chunks(text: str, max_chars: int = 4000, overlap_sentences: int = 1) -> list[str]:
+def split_text_into_chunks(
+    text: str, max_chars: int = 4000, overlap_sentences: int = 1
+) -> list[str]:
     import re
+
     if not text:
         return []
     # Simple sentence split on Vietnamese punctuation and newlines
@@ -1355,6 +1509,350 @@ def split_text_into_chunks(text: str, max_chars: int = 4000, overlap_sentences: 
     if current:
         chunks.append(" ".join(current).strip())
     return chunks
+
+
+# --- Subtitle helpers -----------------------------------------------------
+
+
+def normalize_output_formats(
+    raw_formats: list[Any] | tuple[Any, ...] | None,
+) -> set[str]:
+    """Normalize user-specified output formats with alias handling."""
+    normalized: set[str] = set()
+    if not raw_formats:
+        return normalized
+    for fmt in raw_formats:
+        name = str(fmt or "").strip().lower()
+        if not name:
+            continue
+        if name in {"text", "txt"}:
+            normalized.add("txt")
+        elif name in {"markdown", "md"}:
+            normalized.add("md")
+        elif name == "all":
+            normalized.update({"json", "txt", "srt", "vtt", "tsv"})
+        else:
+            normalized.add(name)
+    return normalized
+
+
+def _format_time_srt(seconds: float) -> str:
+    import math as _m
+
+    t = max(0.0, float(seconds))
+    hh = int(t // 3600)
+    mm = int((t % 3600) // 60)
+    ss = int(t % 60)
+    ms = _m.floor((t - _m.floor(t)) * 1000.0)
+    return f"{hh:02d}:{mm:02d}:{ss:02d},{ms:03d}"
+
+
+def _format_time_vtt(seconds: float) -> str:
+    import math as _m
+
+    t = max(0.0, float(seconds))
+    hh = int(t // 3600)
+    mm = int((t % 3600) // 60)
+    ss = int(t % 60)
+    ms = _m.floor((t - _m.floor(t)) * 1000.0)
+    return f"{hh:02d}:{mm:02d}:{ss:02d}.{ms:03d}"
+
+
+def _escape_subtitle_text(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _compute_word_char_spans(
+    text: str, words: list[dict[str, Any]]
+) -> list[tuple[dict[str, Any], int, int]]:
+    spans: list[tuple[dict[str, Any], int, int]] = []
+    if not text or not words:
+        return spans
+    lower_text = text.lower()
+    cursor = 0
+    for word in words:
+        token = (word.get("word") or "").strip()
+        if not token:
+            continue
+        lower_token = token.lower()
+        idx = lower_text.find(lower_token, cursor)
+        if idx == -1:
+            idx = lower_text.find(lower_token)
+        if idx == -1:
+            continue
+        start = idx
+        end = idx + len(token)
+        spans.append((word, start, end))
+        cursor = end
+    return spans
+
+
+def _wrap_text_spans(
+    text: str, max_chars: int, max_lines: int, complex_language: bool
+) -> list[tuple[int, int]]:
+    if max_chars <= 0 or len(text) <= max_chars:
+        return [(0, len(text))]
+
+    spans: list[tuple[int, int]] = []
+    line_start = 0
+    last_break: int | None = None
+    idx = 0
+    n = len(text)
+    while idx < n:
+        ch = text[idx]
+        if not complex_language and ch.isspace():
+            last_break = idx
+        if idx - line_start >= max_chars:
+            if not complex_language and last_break and last_break > line_start:
+                end = last_break
+            else:
+                end = idx
+            spans.append((line_start, end))
+            if len(spans) >= max_lines:
+                break
+            next_start = end
+            while next_start < n and text[next_start].isspace():
+                next_start += 1
+            line_start = next_start
+            last_break = None
+            idx = max(line_start, idx)
+            continue
+        idx += 1
+
+    if len(spans) < max_lines and line_start < n:
+        spans.append((line_start, n))
+
+    if len(spans) > max_lines:
+        start, _ = spans[max_lines - 1]
+        spans = spans[: max_lines - 1] + [(start, n)]
+
+    normalized: list[tuple[int, int]] = []
+    for start, end in spans:
+        # Trim whitespace at boundaries
+        while start < end and text[start].isspace():
+            start += 1
+        while end > start and text[end - 1].isspace():
+            end -= 1
+        if start < end:
+            normalized.append((start, end))
+    return normalized or [(0, len(text))]
+
+
+def _build_line_entries(
+    text: str,
+    words: list[dict[str, Any]],
+    max_chars: int,
+    max_lines: int,
+    complex_language: bool,
+) -> list[dict[str, Any]]:
+    line_spans = _wrap_text_spans(
+        text,
+        max_chars=max_chars,
+        max_lines=max_lines,
+        complex_language=complex_language,
+    )
+    word_spans = _compute_word_char_spans(text, words)
+    line_entries: list[dict[str, Any]] = []
+    word_idx = 0
+    for start, end in line_spans:
+        line_text = text[start:end].strip()
+        if not line_text:
+            continue
+        line_words: list[dict[str, Any]] = []
+        while word_idx < len(word_spans):
+            word_entry, w_start, w_end = word_spans[word_idx]
+            if w_end <= start:
+                word_idx += 1
+                continue
+            if w_start < end:
+                line_words.append(word_entry)
+                word_idx += 1
+                continue
+            break
+        line_entries.append({"text": line_text, "words": line_words})
+
+    if not line_entries:
+        clean_text = text.strip()
+        if clean_text:
+            line_entries.append({"text": clean_text, "words": words})
+    else:
+        # Attach any remaining words to the last line
+        if word_idx < len(word_spans):
+            remaining = [span[0] for span in word_spans[word_idx:]]
+            line_entries[-1]["words"].extend(remaining)
+
+    return line_entries
+
+
+def prepare_subtitle_units(
+    segments: list[dict[str, Any]],
+    *,
+    language: str,
+    settings: dict[str, Any],
+) -> list[dict[str, Any]]:
+    max_chars = int(settings.get("max_chars_per_line", 42) or 0)
+    max_lines = int(settings.get("max_lines", 2) or 1)
+    complex_languages = {
+        str(code).lower()
+        for code in settings.get("complex_languages", {"zh", "ja", "ko"})
+    }
+    is_complex = language.lower() in complex_languages
+
+    units: list[dict[str, Any]] = []
+    for seg in segments:
+        base_text = (
+            seg.get("text_punct") or seg.get("text_raw") or seg.get("text") or ""
+        ).strip()
+        if not base_text:
+            continue
+        base_start = seg.get("start")
+        base_end = seg.get("end")
+        sentences = seg.get("sentences") or []
+        sentences_source = (
+            sentences
+            if sentences
+            else [
+                {
+                    "text": base_text,
+                    "start": base_start,
+                    "end": base_end,
+                    "words": seg.get("words", []),
+                }
+            ]
+        )
+        for sentence in sentences_source:
+            sent_text = (sentence.get("text") or base_text).strip()
+            if not sent_text:
+                continue
+            start = sentence.get("start")
+            end = sentence.get("end")
+            words = sentence.get("words") or []
+            if (start is None or end is None) and words:
+                starts = [
+                    float(w.get("start")) for w in words if w.get("start") is not None
+                ]
+                ends = [float(w.get("end")) for w in words if w.get("end") is not None]
+                if start is None and starts:
+                    start = min(starts)
+                if end is None and ends:
+                    end = max(ends)
+            if start is None:
+                start = base_start
+            if end is None:
+                end = base_end
+            if start is None or end is None:
+                continue
+            start_val = float(start)
+            end_val = float(end)
+            if end_val <= start_val:
+                end_val = start_val + 0.01
+            line_entries = _build_line_entries(
+                sent_text,
+                words,
+                max_chars=max_chars,
+                max_lines=max_lines,
+                complex_language=is_complex,
+            )
+            units.append(
+                {
+                    "text": sent_text,
+                    "start": start_val,
+                    "end": end_val,
+                    "lines": line_entries,
+                }
+            )
+    return units
+
+
+def _format_highlight_word(word_text: str, word_entry: dict[str, Any], fmt: str) -> str:
+    start = word_entry.get("start")
+    end = word_entry.get("end")
+    attrs = ""
+    if start is not None and end is not None:
+        attrs = f' data-start="{float(start):.3f}" data-end="{float(end):.3f}"'
+    escaped = _escape_subtitle_text(word_text)
+    if fmt == "vtt":
+        return f"<c.highlight{attrs}>{escaped}</c.highlight>"
+    return f"<b{attrs}>{escaped}</b>"
+
+
+def _render_highlight_line(
+    line_text: str, words: list[dict[str, Any]], fmt: str
+) -> str:
+    if not words:
+        return _escape_subtitle_text(line_text)
+    lower_line = line_text.lower()
+    cursor = 0
+    rendered: list[str] = []
+    search_start = 0
+    for word in words:
+        token = (word.get("word") or "").strip()
+        if not token:
+            continue
+        lower_token = token.lower()
+        idx = lower_line.find(lower_token, search_start)
+        if idx == -1:
+            idx = lower_line.find(lower_token)
+        if idx == -1:
+            continue
+        end_idx = idx + len(token)
+        if idx > cursor:
+            rendered.append(_escape_subtitle_text(line_text[cursor:idx]))
+        rendered.append(_format_highlight_word(line_text[idx:end_idx], word, fmt))
+        cursor = end_idx
+        search_start = end_idx
+    if cursor < len(line_text):
+        rendered.append(_escape_subtitle_text(line_text[cursor:]))
+    return "".join(rendered)
+
+
+def format_srt(units: list[dict[str, Any]], highlight: bool = False) -> str:
+    lines: list[str] = []
+    for idx, unit in enumerate(units, start=1):
+        lines.append(str(idx))
+        lines.append(
+            f"{_format_time_srt(unit['start'])} --> {_format_time_srt(unit['end'])}"
+        )
+        for line_entry in unit.get("lines", []):
+            text = line_entry.get("text", "")
+            if highlight:
+                rendered = _render_highlight_line(
+                    text, line_entry.get("words", []), fmt="srt"
+                )
+            else:
+                rendered = _escape_subtitle_text(text)
+            lines.append(rendered)
+        lines.append("")
+    return "\n".join(lines).strip() + "\n"
+
+
+def format_vtt(units: list[dict[str, Any]], highlight: bool = False) -> str:
+    lines: list[str] = ["WEBVTT", ""]
+    for unit in units:
+        lines.append(
+            f"{_format_time_vtt(unit['start'])} --> {_format_time_vtt(unit['end'])}"
+        )
+        for line_entry in unit.get("lines", []):
+            text = line_entry.get("text", "")
+            if highlight:
+                rendered = _render_highlight_line(
+                    text, line_entry.get("words", []), fmt="vtt"
+                )
+            else:
+                rendered = _escape_subtitle_text(text)
+            lines.append(rendered)
+        lines.append("")
+    return "\n".join(lines).strip() + "\n"
+
+
+def format_tsv(units: list[dict[str, Any]]) -> str:
+    rows = ["start\tend\ttext"]
+    for unit in units:
+        text = " ".join(
+            line.get("text", "") for line in unit.get("lines", [])
+        ) or unit.get("text", "")
+        rows.append(f"{unit['start']:.3f}\t{unit['end']:.3f}\t{text.strip()}")
+    return "\n".join(rows).strip() + "\n"
 
 
 def build_chunks_from_segments_by_token_budget(
@@ -1395,7 +1893,9 @@ def summarize_long_text_map_reduce(
     user_prompt: str | None = None,
 ) -> dict[str, Any]:
     # Split into manageable chunks by tokenizer budget and summarize each, then reduce
-    input_limit = _compute_input_token_limit(max_model_len, prompt_overhead_tokens=128, output_margin_tokens=256)
+    input_limit = _compute_input_token_limit(
+        max_model_len, prompt_overhead_tokens=128, output_margin_tokens=256
+    )
     chunks = _split_text_by_token_budget(llm, text, max_input_tokens=input_limit)
     if not chunks:
         return {"bullets": [], "abstract": ""}
@@ -1406,7 +1906,13 @@ def summarize_long_text_map_reduce(
         if show_progress and tqdm is not None:
             iterable = tqdm(iterable, total=len(chunks), desc="Summarize map")
         for chunk in iterable:
-            part = summarize_text(llm, chunk, system_prompt, temperature=temperature, user_prompt=user_prompt)
+            part = summarize_text(
+                llm,
+                chunk,
+                system_prompt,
+                temperature=temperature,
+                user_prompt=user_prompt,
+            )
             partial_bullets.extend(part.get("bullets", [])[:5])
             if part.get("abstract"):
                 partial_abstracts.append(part["abstract"])
@@ -1429,7 +1935,11 @@ def summarize_long_text_map_reduce(
         while start < len(list_of_messages):
             end = min(start + int(max(1, batch_prompts)), len(list_of_messages))
             msgs = list_of_messages[start:end]
-            outs.extend(generate_chat_batch(llm, msgs, temperature=temperature, max_tokens=params_max))
+            outs.extend(
+                generate_chat_batch(
+                    llm, msgs, temperature=temperature, max_tokens=params_max
+                )
+            )
             start = end
         for content in outs:
             try:
@@ -1445,12 +1955,20 @@ def summarize_long_text_map_reduce(
     # Reduce
     reduce_text = "\n".join([f"- {b}" for b in partial_bullets] + partial_abstracts)
     # Ensure the reduce step also respects token budget
-    reduce_chunks = _split_text_by_token_budget(llm, reduce_text, max_input_tokens=input_limit)
+    reduce_chunks = _split_text_by_token_budget(
+        llm, reduce_text, max_input_tokens=input_limit
+    )
     # Initialize containers so later references (raw assembly) are always bound
     reduce_raw_parts: list[str] = []
     outs2: list[str] = []
     if len(reduce_chunks) == 1:
-        reduced = summarize_text(llm, reduce_chunks[0], system_prompt, temperature=temperature, user_prompt=user_prompt)
+        reduced = summarize_text(
+            llm,
+            reduce_chunks[0],
+            system_prompt,
+            temperature=temperature,
+            user_prompt=user_prompt,
+        )
     else:
         # Summarize each reduce chunk then merge (batched if enabled)
         merged_bullets: list[str] = []
@@ -1458,11 +1976,19 @@ def summarize_long_text_map_reduce(
         if batch_prompts <= 1:
             iterable = reduce_chunks
             if show_progress and tqdm is not None:
-                iterable = tqdm(iterable, total=len(reduce_chunks), desc="Summarize reduce")
+                iterable = tqdm(
+                    iterable, total=len(reduce_chunks), desc="Summarize reduce"
+                )
             # Collect raw outputs to expose a concatenated raw signal
             reduce_raw_parts = []
             for rc in iterable:
-                rpart = summarize_text(llm, rc, system_prompt, temperature=temperature, user_prompt=user_prompt)
+                rpart = summarize_text(
+                    llm,
+                    rc,
+                    system_prompt,
+                    temperature=temperature,
+                    user_prompt=user_prompt,
+                )
                 merged_bullets.extend(rpart.get("bullets", [])[:5])
                 if rpart.get("abstract"):
                     merged_abstracts.append(rpart["abstract"])
@@ -1475,16 +2001,25 @@ def summarize_long_text_map_reduce(
                     user_content = f"{user_prompt}\n\n{rc}"
                 else:
                     user_content = f"{rc}"
-                list_of_messages.append([
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ])
+                list_of_messages.append(
+                    [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content},
+                    ]
+                )
             params_max = 800
             outs2 = []
             start = 0
             while start < len(list_of_messages):
                 end = min(start + int(max(1, batch_prompts)), len(list_of_messages))
-                outs2.extend(generate_chat_batch(llm, list_of_messages[start:end], temperature=temperature, max_tokens=params_max))
+                outs2.extend(
+                    generate_chat_batch(
+                        llm,
+                        list_of_messages[start:end],
+                        temperature=temperature,
+                        max_tokens=params_max,
+                    )
+                )
                 start = end
             for content in outs2:
                 try:
@@ -1492,7 +2027,11 @@ def summarize_long_text_map_reduce(
                     mb = parsed.get("bullets", [])
                     ma = parsed.get("abstract", "")
                 except (ValueError, KeyError, TypeError):
-                    mb = [line.strip("- ") for line in content.splitlines() if line.strip()]
+                    mb = [
+                        line.strip("- ")
+                        for line in content.splitlines()
+                        if line.strip()
+                    ]
                     ma = ""
                 merged_bullets.extend(mb[:5])
                 if ma:
@@ -1510,10 +2049,10 @@ def summarize_long_text_map_reduce(
         try:
             raw_candidates: list[str] = []
             # from single-chunk reduce loop
-            if 'reduce_raw_parts' in locals() and reduce_raw_parts:
+            if "reduce_raw_parts" in locals() and reduce_raw_parts:
                 raw_candidates.extend([str(x) for x in reduce_raw_parts if x])
             # from multi-chunk reduce batching
-            if 'outs2' in locals() and outs2:
+            if "outs2" in locals() and outs2:
                 raw_candidates.extend([str(x).strip() for x in outs2 if str(x).strip()])
             raw_out = "\n\n".join(raw_candidates) if raw_candidates else None
         except (ValueError, KeyError, TypeError):
@@ -1526,33 +2065,100 @@ def summarize_long_text_map_reduce(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Post-process ASR with vLLM (offline): punctuation + summary")
-    parser.add_argument("--config", type=str, default="/home/cetech/omoai/config.yaml", help="Path to config.yaml")
+    parser = argparse.ArgumentParser(
+        description="Post-process ASR with vLLM (offline): punctuation + summary"
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="/home/cetech/omoai/config.yaml",
+        help="Path to config.yaml",
+    )
     parser.add_argument("--asr-json", type=str, required=True, help="Path to ASR JSON")
     parser.add_argument("--model", type=str, default=None, help="HF model id for vLLM")
-    parser.add_argument("--quantization", type=str, default=None, help="Quantization type (e.g., awq, gptq)")
-    parser.add_argument("--max-model-len", type=int, default=None, help="Max model len (context)")
-    parser.add_argument("--gpu-memory-utilization", type=float, default=None, help="GPU memory util ratio")
-    parser.add_argument("--out", type=str, required=True, help="Path to output final JSON")
-    parser.add_argument("--max-num-seqs", type=int, default=None, help="Max concurrent sequences (memory)")
-    parser.add_argument("--max-num-batched-tokens", type=int, default=None, help="Max batched tokens (memory)")
-    parser.add_argument("--auto-outdir", action="store_true", help="Create per-input folder under paths.out_dir/{stem-YYYYMMDD-HHMMSS}; if ASR JSON already resides under paths.out_dir/<name>, reuse that folder")
+    parser.add_argument(
+        "--quantization",
+        type=str,
+        default=None,
+        help="Quantization type (e.g., awq, gptq)",
+    )
+    parser.add_argument(
+        "--max-model-len", type=int, default=None, help="Max model len (context)"
+    )
+    parser.add_argument(
+        "--gpu-memory-utilization",
+        type=float,
+        default=None,
+        help="GPU memory util ratio",
+    )
+    parser.add_argument(
+        "--out", type=str, required=True, help="Path to output final JSON"
+    )
+    parser.add_argument(
+        "--max-num-seqs",
+        type=int,
+        default=None,
+        help="Max concurrent sequences (memory)",
+    )
+    parser.add_argument(
+        "--max-num-batched-tokens",
+        type=int,
+        default=None,
+        help="Max batched tokens (memory)",
+    )
+    parser.add_argument(
+        "--auto-outdir",
+        action="store_true",
+        help="Create per-input folder under paths.out_dir/{stem-YYYYMMDD-HHMMSS}; if ASR JSON already resides under paths.out_dir/<name>, reuse that folder",
+    )
     # Punctuation controls (segmented batching only)
-    parser.add_argument("--punct-auto-ratio", type=float, default=None, help="Ratio of context length used to form per-batch token budget")
-    parser.add_argument("--punct-auto-margin", type=int, default=None, help="Margin tokens reserved for punctuation output")
-
+    parser.add_argument(
+        "--punct-auto-ratio",
+        type=float,
+        default=None,
+        help="Ratio of context length used to form per-batch token budget",
+    )
+    parser.add_argument(
+        "--punct-auto-margin",
+        type=int,
+        default=None,
+        help="Margin tokens reserved for punctuation output",
+    )
 
     # Safety controls
-    parser.add_argument("--trust-remote-code", action="store_true", help="Enable trust_remote_code for vLLM")
-    parser.add_argument("--no-trust-remote-code", action="store_true", help="Disable trust_remote_code")
+    parser.add_argument(
+        "--trust-remote-code",
+        action="store_true",
+        help="Enable trust_remote_code for vLLM",
+    )
+    parser.add_argument(
+        "--no-trust-remote-code", action="store_true", help="Disable trust_remote_code"
+    )
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     # Usability/runtime controls
-    parser.add_argument("--dry-run", action="store_true", help="Simulate planning; no LLM calls; still write output with metadata/decisions")
-    parser.add_argument("--stream-asr", action="store_true", help="Stream ASR JSON (requires ijson) to reduce memory")
-    parser.add_argument("--progress", action="store_true", help="Enable progress bars (tqdm)")
-    parser.add_argument("--no-progress", action="store_true", help="Disable progress bars")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Simulate planning; no LLM calls; still write output with metadata/decisions",
+    )
+    parser.add_argument(
+        "--stream-asr",
+        action="store_true",
+        help="Stream ASR JSON (requires ijson) to reduce memory",
+    )
+    parser.add_argument(
+        "--progress", action="store_true", help="Enable progress bars (tqdm)"
+    )
+    parser.add_argument(
+        "--no-progress", action="store_true", help="Disable progress bars"
+    )
     # Removed: --use-vi-sentence-seg (no longer used in segmented batching-only flow)
-    parser.add_argument("--batch-prompts", type=int, default=None, help="Max prompts per batched generation call")
+    parser.add_argument(
+        "--batch-prompts",
+        type=int,
+        default=None,
+        help="Max prompts per batched generation call",
+    )
     parser.add_argument(
         "--timestamped_summary",
         action="store_true",
@@ -1567,6 +2173,7 @@ def main() -> None:
         # If running as a script with imports failing, ensure src/ is on sys.path then retry
         import sys as _sys
         from pathlib import Path as _Path
+
         _sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / "src"))
         from omoai.config.schemas import get_config
 
@@ -1589,35 +2196,51 @@ def main() -> None:
     # Global defaults
     model_id_from_cfg = cfg.llm.model_id
     if model_id_from_cfg is None:
-        raise ValueError("model_id not found in configuration. Please ensure it is set in the config file under the 'llm' section.")
+        raise ValueError(
+            "model_id not found in configuration. Please ensure it is set in the config file under the 'llm' section."
+        )
     model_id_default = args.model or model_id_from_cfg
     quant_default = args.quantization or cfg_get(["llm", "quantization"], None)
     mml_default = int(args.max_model_len or cfg_get(["llm", "max_model_len"], 2048))
-    gmu_default = float(args.gpu_memory_utilization or cfg_get(["llm", "gpu_memory_utilization"], 0.90))
+    gmu_default = float(
+        args.gpu_memory_utilization or cfg_get(["llm", "gpu_memory_utilization"], 0.90)
+    )
     mns_default = int(args.max_num_seqs or cfg_get(["llm", "max_num_seqs"], 1))
-    mbt_default = int(args.max_num_batched_tokens or cfg_get(["llm", "max_num_batched_tokens"], 512))
+    mbt_default = int(
+        args.max_num_batched_tokens or cfg_get(["llm", "max_num_batched_tokens"], 512)
+    )
 
     # Punctuation overrides (segmented batching only)
     p_model_id = cfg_get(["punctuation", "llm", "model_id"], model_id_default)
     p_quant = cfg_get(["punctuation", "llm", "quantization"], quant_default)
     p_mml = int(cfg_get(["punctuation", "llm", "max_model_len"], mml_default))
-    p_gmu = float(cfg_get(["punctuation", "llm", "gpu_memory_utilization"], gmu_default))
+    p_gmu = float(
+        cfg_get(["punctuation", "llm", "gpu_memory_utilization"], gmu_default)
+    )
     p_mns = int(cfg_get(["punctuation", "llm", "max_num_seqs"], mns_default))
     p_mbt = int(cfg_get(["punctuation", "llm", "max_num_batched_tokens"], mbt_default))
     p_temp = float(cfg_get(["punctuation", "sampling", "temperature"], 0.0))
     # Optional user-provided prompt to guide punctuation (prepended to segment/chunk text)
     # p_user_prompt = cfg_get(["punctuation", "user_prompt"], None)  # Unused variable removed
-    punct_auto_ratio = float(args.punct_auto_ratio or cfg_get(["punctuation", "auto_switch_ratio"], 0.98))
-    punct_auto_margin = int(args.punct_auto_margin or cfg_get(["punctuation", "auto_margin_tokens"], 128))
+    punct_auto_ratio = float(
+        args.punct_auto_ratio or cfg_get(["punctuation", "auto_switch_ratio"], 0.98)
+    )
+    punct_auto_margin = int(
+        args.punct_auto_margin or cfg_get(["punctuation", "auto_margin_tokens"], 128)
+    )
 
     # Output quality controls (hardcoded)
     adopt_case = True
-    preserve_original_words = bool(cfg_get(["punctuation", "preserve_original_words"], True))
+    preserve_original_words = bool(
+        cfg_get(["punctuation", "preserve_original_words"], True)
+    )
     # keep_nonempty_segments is enforced and not user-configurable
     # keep_nonempty_segments = True  # Unused variable removed
 
     join_sep = str(cfg_get(["punctuation", "join_separator"], " "))
-    use_vi_sentence_seg = bool(cfg_get(["punctuation", "use_vi_sentence_segmenter"], False))
+    use_vi_sentence_seg = bool(
+        cfg_get(["punctuation", "use_vi_sentence_segmenter"], False)
+    )
     enable_paragraphs = bool(cfg_get(["punctuation", "enable_paragraphs"], True))
 
     # Safety controls
@@ -1633,14 +2256,26 @@ def main() -> None:
     s_model_id = cfg_get(["summarization", "llm", "model_id"], model_id_default)
     s_quant = cfg_get(["summarization", "llm", "quantization"], quant_default)
     s_mml = int(cfg_get(["summarization", "llm", "max_model_len"], mml_default))
-    s_gmu = float(cfg_get(["summarization", "llm", "gpu_memory_utilization"], gmu_default))
+    s_gmu = float(
+        cfg_get(["summarization", "llm", "gpu_memory_utilization"], gmu_default)
+    )
     s_mns = int(cfg_get(["summarization", "llm", "max_num_seqs"], mns_default))
-    s_mbt = int(cfg_get(["summarization", "llm", "max_num_batched_tokens"], mbt_default))
+    s_mbt = int(
+        cfg_get(["summarization", "llm", "max_num_batched_tokens"], mbt_default)
+    )
     s_temp = float(cfg_get(["summarization", "sampling", "temperature"], 0.2))
 
-    def build_llm(model_id: str, quant: str | None, max_model_len: int, gmu: float, mns: int, mbt: int) -> Any:
+    def build_llm(
+        model_id: str,
+        quant: str | None,
+        max_model_len: int,
+        gmu: float,
+        mns: int,
+        mbt: int,
+    ) -> Any:
         # Ensure spawn method & environment JUST before first real vLLM import.
         import multiprocessing as _mp
+
         try:
             if _mp.get_start_method(allow_none=True) != "spawn":
                 _mp.set_start_method("spawn", force=True)
@@ -1659,7 +2294,11 @@ def main() -> None:
         global SamplingParams
         SamplingParams = _RealSamplingParams  # type: ignore
 
-        q = None if quant in (None, "auto", "infer", "compressed-tensors", "model") else str(quant)
+        q = (
+            None
+            if quant in (None, "auto", "infer", "compressed-tensors", "model")
+            else str(quant)
+        )
 
         kwargs = dict(
             model=model_id,
@@ -1692,10 +2331,17 @@ def main() -> None:
         asr = load_asr_json(asr_json_path)
         segments = asr.get("segments", [])
     transcript_raw: str = asr.get("transcript_raw", "") if isinstance(asr, dict) else ""
+    asr_metadata = asr.get("metadata", {}) if isinstance(asr, dict) else {}
+    try:
+        asr_model_tag = str(asr_metadata.get("asr_model", "")).lower()
+    except AttributeError:
+        asr_model_tag = ""
+    whisperx_backend = str(
+        getattr(getattr(cfg, "asr", None), "engine", "chunkformer")
+    ).lower() == "whisperx" or asr_model_tag.startswith("whisperx:")
 
     # English prompts that request Vietnamese outputs
-    punct_system_default = (
-        """<instruction>
+    punct_system_default = """<instruction>
     You are an expert in Vietnamese grammar and punctuation. Your task is to meticulously correct the input text by adding proper punctuation and capitalization.
     - Add all necessary punctuation, including commas, periods, question marks, etc.
     - Correct capitalization for the start of sentences and proper nouns (e.g., 'hà nội' -> 'Hà Nội').
@@ -1721,9 +2367,7 @@ def main() -> None:
     <policy>
     ABSOLUTE RULE: Do not delete, replace, or rephrase any words from the original input. Your only task is to add punctuation and capitalization. The original words must be kept exactly as they are.
     </policy>"""
-    )
-    sum_system_default = (
-        """<instruction>
+    sum_system_default = """<instruction>
     You are a highly skilled Vietnamese text analysis engine. Your task is to generate a concise summary of the input text and format it as a single, valid JSON object.
     - The JSON object must contain exactly two keys: "bullets" and "abstract".
     - The "bullets" value must be an array of 3 to 7 short Vietnamese sentences (max 20 words each), highlighting the main points.
@@ -1759,7 +2403,6 @@ def main() -> None:
     }
     </output>
     </example>"""
-    )
     punct_system = str(cfg_get(["punctuation", "system_prompt"], punct_system_default))
     sum_system = str(cfg_get(["summarization", "system_prompt"], sum_system_default))
     # Progress and batching controls
@@ -1767,7 +2410,9 @@ def main() -> None:
     if args.no_progress:
         progress_enabled = False
     verbose = bool(args.verbose)
-    prompt_batch_prompts = int(args.batch_prompts) if args.batch_prompts is not None else int(p_mns)
+    prompt_batch_prompts = (
+        int(args.batch_prompts) if args.batch_prompts is not None else int(p_mns)
+    )
 
     if verbose:
         logger.info(
@@ -1783,6 +2428,7 @@ def main() -> None:
     if VLLM_AVAILABLE is None:
         try:
             import vllm  # type: ignore  # noqa: F401
+
             VLLM_AVAILABLE = True
         except ImportError:
             VLLM_AVAILABLE = False
@@ -1791,7 +2437,9 @@ def main() -> None:
     # Also activate this path automatically when vLLM is unavailable.
     if bool(args.dry_run) or not VLLM_AVAILABLE:
         if not VLLM_AVAILABLE:
-            logger.warning("[post] vLLM not available; running in offline dry-run mode (no LLM calls)")
+            logger.warning(
+                "[post] vLLM not available; running in offline dry-run mode (no LLM calls)"
+            )
         # Segmented batching only: estimate batches by approximate per-segment tokens
         approx_tokens = max(1, len((transcript_raw or "").strip()) // 3)
         ratio = max(0.5, min(1.0, float(punct_auto_ratio)))
@@ -1820,21 +2468,41 @@ def main() -> None:
         ratio_limit = max(0.5, min(1.0, auto_ratio))
         s_token_limit = int(ratio_limit * int(s_mml)) - margin_tokens
         approx_sum_tokens = approx_tokens
-        sum_mode = "map_reduce" if ((approx_sum_tokens and approx_sum_tokens > s_token_limit) or bool(cfg_get(["summarization", "map_reduce"], False))) else "single"
+        sum_mode = (
+            "map_reduce"
+            if (
+                (approx_sum_tokens and approx_sum_tokens > s_token_limit)
+                or bool(cfg_get(["summarization", "map_reduce"], False))
+            )
+            else "single"
+        )
 
         decisions: dict[str, Any] = {
-            "punctuation_mode": "segments",
+            "punctuation_mode": "pass_through" if whisperx_backend else "segments",
             "segments_count": len(segments),
-            "estimated_batches": est_batches,
+            "estimated_batches": 0 if whisperx_backend else est_batches,
             "summarization_mode": sum_mode,
         }
+
+        final_segments = [dict(s) for s in segments]
+        if whisperx_backend:
+            for seg in final_segments:
+                raw_text = str(seg.get("text_raw") or seg.get("text") or "").strip()
+                seg["text_raw"] = raw_text
+                seg["text_punct"] = str(seg.get("text_punct") or raw_text)
 
         final = dict(asr)
         final.update(
             {
-                "segments": segments,
-                # Without an LLM, pass through raw transcript; real punctuation requires vLLM
-                "transcript_punct": (asr.get("transcript_raw") or "") if isinstance(asr, dict) else "",
+                "segments": final_segments,
+                # Without an LLM, pass through ASR transcript
+                "transcript_punct": (
+                    (asr.get("transcript_punct") or asr.get("transcript_raw") or "")
+                    if whisperx_backend and isinstance(asr, dict)
+                    else (
+                        asr.get("transcript_raw") or "" if isinstance(asr, dict) else ""
+                    )
+                ),
                 "summary": {"bullets": [], "abstract": ""},
                 "metadata": {
                     **(asr.get("metadata", {}) if isinstance(asr, dict) else {}),
@@ -1850,103 +2518,135 @@ def main() -> None:
         save_json(out_path, final)
         return
 
-    # Stage 1: punctuation LLM instance and segmented-batching processing
     llm_punc: Any | None = None
-    llm_punc = build_llm(p_model_id, p_quant, p_mml, p_gmu, p_mns, p_mbt)
     punct_segments: list[dict[str, Any]]
     transcript_punct: str
+    batches: list[dict[str, Any]] = []
 
-    # Segmented punctuation with batching by token budget
-    ratio = max(0.5, min(1.0, float(punct_auto_ratio)))
-    token_limit = int(ratio * p_mml) - int(punct_auto_margin)
-    token_limit = max(256, token_limit)
-    if verbose:
-        logger.info(
-            f"[post] Punctuation: token_limit={token_limit}, segments={len(segments)}",
+    if whisperx_backend:
+        punct_segments = [dict(s) for s in segments]
+        for seg in punct_segments:
+            raw_text = str(seg.get("text_raw") or seg.get("text") or "").strip()
+            seg["text_raw"] = raw_text
+            seg["text_punct"] = str(seg.get("text_punct") or raw_text)
+        transcript_punct = join_punctuated_segments(
+            punct_segments,
+            join_separator=join_sep,
+            use_vi_sentence_segmenter=use_vi_sentence_seg,
         )
-    batches = _build_segment_batches_by_token_budget(llm_punc, segments, token_limit, safety_margin=64)
-    if verbose:
-        logger.info(f"[post] Created {len(batches)} batches for punctuation")
-    # Initialize output copy
-    punct_segments = [dict(s) for s in segments]
-    chunk_puncts: list[str] = []
-    # Batched generation across batch texts for throughput
-    non_empty_batches = [b for b in batches if b["text"]]
-    list_of_messages: list[list[dict[str, str]]] = [
-        [
-            {"role": "system", "content": punct_system},
-            {"role": "user", "content": b["text"]},
+        if not transcript_punct:
+            transcript_punct = (
+                str(asr.get("transcript_punct") or transcript_raw)
+                if isinstance(asr, dict)
+                else transcript_raw
+            )
+        logger.info("[post] Skipping punctuation LLM stage for WhisperX backend")
+    else:
+        llm_punc = build_llm(p_model_id, p_quant, p_mml, p_gmu, p_mns, p_mbt)
+
+        # Segmented punctuation with batching by token budget
+        ratio = max(0.5, min(1.0, float(punct_auto_ratio)))
+        token_limit = int(ratio * p_mml) - int(punct_auto_margin)
+        token_limit = max(256, token_limit)
+        if verbose:
+            logger.info(
+                f"[post] Punctuation: token_limit={token_limit}, segments={len(segments)}",
+            )
+        batches = _build_segment_batches_by_token_budget(
+            llm_punc, segments, token_limit, safety_margin=64
+        )
+        if verbose:
+            logger.info(f"[post] Created {len(batches)} batches for punctuation")
+        # Initialize output copy
+        punct_segments = [dict(s) for s in segments]
+        chunk_puncts: list[str] = []
+        # Batched generation across batch texts for throughput
+        non_empty_batches = [b for b in batches if b["text"]]
+        list_of_messages: list[list[dict[str, str]]] = [
+            [
+                {"role": "system", "content": punct_system},
+                {"role": "user", "content": b["text"]},
+            ]
+            for b in non_empty_batches
         ]
-        for b in non_empty_batches
-    ]
-    try:
-        tokenizer = get_tokenizer(llm_punc)
-        est_in = [len(tokenizer.encode(b["text"])) for b in non_empty_batches]
-    except (ValueError, KeyError, TypeError):
-        est_in = [max(64, len(b["text"]) // 3) for b in non_empty_batches]
-    est_out = [max(64, min(int(p_mml) - 64, i + 128)) for i in est_in]
-    generated_texts: list[str] = []
-    start_idx = 0
-    if tqdm is not None and progress_enabled:
-        pbar = tqdm(total=len(non_empty_batches), desc="Punct batches")
-    else:
-        pbar = None
-    while start_idx < len(list_of_messages):
-        end_idx = min(start_idx + int(max(1, prompt_batch_prompts)), len(list_of_messages))
-        group_msgs = list_of_messages[start_idx:end_idx]
-        group_max = max(est_out[start_idx:end_idx]) if est_out else 512
-        generated = generate_chat_batch(llm_punc, group_msgs, temperature=p_temp, max_tokens=int(group_max))
-        generated_texts.extend(generated)
-        if pbar is not None:
-            pbar.update(len(group_msgs))
-        start_idx = end_idx
-    if pbar is not None:
-        pbar.close()
-    gi = 0
-    for b in batches:
-        if not b["text"]:
-            continue
-        chunk_punct = generated_texts[gi]
-        gi += 1
-        sub_segments = segments[b["start_idx"] : b["end_idx"]]
-        # Optionally preserve original words or allow LLM to rewrite (for spelling/clean-up)
-        if preserve_original_words:
-            original_concat = " ".join((s.get("text_raw") or "").strip() for s in sub_segments).strip()
-            aligned_chunk = _force_preserve_with_alignment(original_concat, chunk_punct or "", adopt_case=adopt_case)
+        try:
+            tokenizer = get_tokenizer(llm_punc)
+            est_in = [len(tokenizer.encode(b["text"])) for b in non_empty_batches]
+        except (ValueError, KeyError, TypeError):
+            est_in = [max(64, len(b["text"]) // 3) for b in non_empty_batches]
+        est_out = [max(64, min(int(p_mml) - 64, i + 128)) for i in est_in]
+        generated_texts: list[str] = []
+        start_idx = 0
+        if tqdm is not None and progress_enabled:
+            pbar = tqdm(total=len(non_empty_batches), desc="Punct batches")
         else:
-            aligned_chunk = (chunk_punct or "").strip()
-        if aligned_chunk:
-            chunk_puncts.append(aligned_chunk)
-        # Distribute with LLM-aware fallback to fill per-segment punctuation if strict slicing fails
-        distributed = _safe_distribute_punct_to_segments(
-            aligned_chunk,
-            sub_segments,
-            llm=llm_punc,
-            system_prompt=punct_system,
-            max_model_len=p_mml,
-            temperature=p_temp,
-            batch_prompts=prompt_batch_prompts,
-            show_progress=False,
-        )
-        # Write back
-        for k, seg_out in enumerate(distributed):
-            punct_segments[b["start_idx"] + k]["text_punct"] = seg_out.get("text_punct", "")
-    # Build transcript from aggregated chunk outputs with deduplication
-    if not chunk_puncts:
-        transcript_punct = ""
-    else:
-        transcript_punct = chunk_puncts[0].strip()
-        for cp in chunk_puncts[1:]:
-            if cp:
-                deduped = _dedup_overlap(transcript_punct, cp.strip(), max_tokens=8)
-                transcript_punct = (transcript_punct + " " + deduped).strip()
+            pbar = None
+        while start_idx < len(list_of_messages):
+            end_idx = min(
+                start_idx + int(max(1, prompt_batch_prompts)), len(list_of_messages)
+            )
+            group_msgs = list_of_messages[start_idx:end_idx]
+            group_max = max(est_out[start_idx:end_idx]) if est_out else 512
+            generated = generate_chat_batch(
+                llm_punc, group_msgs, temperature=p_temp, max_tokens=int(group_max)
+            )
+            generated_texts.extend(generated)
+            if pbar is not None:
+                pbar.update(len(group_msgs))
+            start_idx = end_idx
+        if pbar is not None:
+            pbar.close()
+        gi = 0
+        for b in batches:
+            if not b["text"]:
+                continue
+            chunk_punct = generated_texts[gi]
+            gi += 1
+            sub_segments = segments[b["start_idx"] : b["end_idx"]]
+            # Optionally preserve original words or allow LLM to rewrite (for spelling/clean-up)
+            if preserve_original_words:
+                original_concat = " ".join(
+                    (s.get("text_raw") or "").strip() for s in sub_segments
+                ).strip()
+                aligned_chunk = _force_preserve_with_alignment(
+                    original_concat, chunk_punct or "", adopt_case=adopt_case
+                )
+            else:
+                aligned_chunk = (chunk_punct or "").strip()
+            if aligned_chunk:
+                chunk_puncts.append(aligned_chunk)
+            # Distribute with LLM-aware fallback to fill per-segment punctuation if strict slicing fails
+            distributed = _safe_distribute_punct_to_segments(
+                aligned_chunk,
+                sub_segments,
+                llm=llm_punc,
+                system_prompt=punct_system,
+                max_model_len=p_mml,
+                temperature=p_temp,
+                batch_prompts=prompt_batch_prompts,
+                show_progress=False,
+            )
+            # Write back
+            for k, seg_out in enumerate(distributed):
+                punct_segments[b["start_idx"] + k]["text_punct"] = seg_out.get(
+                    "text_punct", ""
+                )
+        # Build transcript from aggregated chunk outputs with deduplication
+        if not chunk_puncts:
+            transcript_punct = ""
+        else:
+            transcript_punct = chunk_puncts[0].strip()
+            for cp in chunk_puncts[1:]:
+                if cp:
+                    deduped = _dedup_overlap(transcript_punct, cp.strip(), max_tokens=8)
+                    transcript_punct = (transcript_punct + " " + deduped).strip()
 
-    # Re-process segments through paragraph formatter for better flow
-    transcript_punct = join_punctuated_segments(
-        punct_segments,
-        join_separator=join_sep,
-        use_vi_sentence_segmenter=use_vi_sentence_seg,
-    )
+        # Re-process segments through paragraph formatter for better flow
+        transcript_punct = join_punctuated_segments(
+            punct_segments,
+            join_separator=join_sep,
+            use_vi_sentence_segmenter=use_vi_sentence_seg,
+        )
 
     # Keep llm_punc for reuse if settings match summarization
 
@@ -1955,14 +2655,19 @@ def main() -> None:
     # Auto-switch logic: single-pass unless use_map_reduce is forced, or total tokens exceed ratio*context
     use_map_reduce = bool(cfg_get(["summarization", "map_reduce"], False))
     # Stage 2: summarization LLM instance (reuse if identical settings)
-    reuse = (
-        s_model_id == p_model_id
-        and (str(s_quant) == str(p_quant) or (s_quant in (None, "auto") and p_quant in (None, "auto")))
-        and s_mml == p_mml
-        and abs(float(s_gmu) - float(p_gmu)) < 1e-6
-        and s_mns == p_mns
-        and s_mbt == p_mbt
-    )
+    reuse = False
+    if not whisperx_backend:
+        reuse = (
+            s_model_id == p_model_id
+            and (
+                str(s_quant) == str(p_quant)
+                or (s_quant in (None, "auto") and p_quant in (None, "auto"))
+            )
+            and s_mml == p_mml
+            and abs(float(s_gmu) - float(p_gmu)) < 1e-6
+            and s_mns == p_mns
+            and s_mbt == p_mbt
+        )
     if reuse:
         llm_sum = llm_punc
     else:
@@ -1988,10 +2693,21 @@ def main() -> None:
     ratio_limit = max(0.5, min(1.0, auto_ratio))  # clamp for safety
     token_limit = int(ratio_limit * s_mml) - margin_tokens
 
-    if not use_map_reduce and tokenizer_s is not None and total_tokens_s and total_tokens_s <= token_limit:
+    if (
+        not use_map_reduce
+        and tokenizer_s is not None
+        and total_tokens_s
+        and total_tokens_s <= token_limit
+    ):
         if verbose:
             logger.info(f"[post] Summarization: single-pass, tokens={total_tokens_s}")
-        summary = summarize_text(llm_sum, long_text, sum_system, temperature=s_temp, user_prompt=s_user_prompt)
+        summary = summarize_text(
+            llm_sum,
+            long_text,
+            sum_system,
+            temperature=s_temp,
+            user_prompt=s_user_prompt,
+        )
     else:
         if verbose:
             logger.info(f"[post] Summarization: map-reduce, tokens={total_tokens_s}")
@@ -2008,7 +2724,9 @@ def main() -> None:
 
     # Consistency check: validate all non-empty text_raw have non-empty text_punct
     non_empty_raw = sum(1 for s in punct_segments if (s.get("text_raw") or "").strip())
-    non_empty_punct = sum(1 for s in punct_segments if (s.get("text_punct") or "").strip())
+    non_empty_punct = sum(
+        1 for s in punct_segments if (s.get("text_punct") or "").strip()
+    )
     punct_coverage = non_empty_punct / max(1, non_empty_raw)
 
     # Count punctuation marks for quality metrics
@@ -2025,7 +2743,7 @@ def main() -> None:
 
     # Compose final output with enhanced metadata
     decisions = {
-        "punctuation_mode": "segments",
+        "punctuation_mode": "pass_through" if whisperx_backend else "segments",
         "segments_count": len(segments),
         "batches_used": len(batches),
         "punct_coverage": round(punct_coverage, 4),
@@ -2039,9 +2757,7 @@ def main() -> None:
     # --- Compute quality metrics & diffs ---
     try:
         original_text = (
-            (asr.get("transcript_raw") or "")
-            if isinstance(asr, dict)
-            else ""
+            (asr.get("transcript_raw") or "") if isinstance(asr, dict) else ""
         )
         if not original_text and isinstance(asr, dict):
             original_text = asr.get("text") or ""
@@ -2058,7 +2774,9 @@ def main() -> None:
 
         # Compute metrics only if we have something to compare
         if original_text and transcript_punct:
-            wer_val = _compute_wer(_split_words(original_text), _split_words(transcript_punct))
+            wer_val = _compute_wer(
+                _split_words(original_text), _split_words(transcript_punct)
+            )
             cer_val = _compute_cer(original_text, transcript_punct)
             per_val = _compute_per(original_text, transcript_punct)
             uwer_val, fwer_val = _compute_uwer_fwer(original_text, transcript_punct)
@@ -2094,19 +2812,50 @@ def main() -> None:
     # Generate timestamped summary if requested
     if args.timestamped_summary:
         if not VLLM_AVAILABLE or args.dry_run:
-            logger.warning("[post] Timestamped summary requested but vLLM not available or dry-run mode; skipping")
+            logger.warning(
+                "[post] Timestamped summary requested but vLLM not available or dry-run mode; skipping"
+            )
         else:
             try:
                 logger.info("Starting timestamped summary generation...")
-                system_prompt = cfg_get(["timestamped_summary", "system_prompt"], "You are a helpful assistant that processes transcripts to create summaries...")
+                system_prompt = cfg_get(
+                    ["timestamped_summary", "system_prompt"],
+                    "You are a helpful assistant that processes transcripts to create summaries...",
+                )
 
                 # Build a dedicated LLM instance for timestamped_summary using its own config
-                ts_model_id = cfg_get(["timestamped_summary", "llm", "model_id"], model_id_default) or model_id_default
-                ts_quant = cfg_get(["timestamped_summary", "llm", "quantization"], quant_default) or quant_default
-                ts_mml = int(cfg_get(["timestamped_summary", "llm", "max_model_len"], None) or mml_default)
-                ts_gmu = float(cfg_get(["timestamped_summary", "llm", "gpu_memory_utilization"], None) or gmu_default)
-                ts_mns = int(cfg_get(["timestamped_summary", "llm", "max_num_seqs"], None) or mns_default)
-                ts_mbt = int(cfg_get(["timestamped_summary", "llm", "max_num_batched_tokens"], None) or mbt_default)
+                ts_model_id = (
+                    cfg_get(
+                        ["timestamped_summary", "llm", "model_id"], model_id_default
+                    )
+                    or model_id_default
+                )
+                ts_quant = (
+                    cfg_get(
+                        ["timestamped_summary", "llm", "quantization"], quant_default
+                    )
+                    or quant_default
+                )
+                ts_mml = int(
+                    cfg_get(["timestamped_summary", "llm", "max_model_len"], None)
+                    or mml_default
+                )
+                ts_gmu = float(
+                    cfg_get(
+                        ["timestamped_summary", "llm", "gpu_memory_utilization"], None
+                    )
+                    or gmu_default
+                )
+                ts_mns = int(
+                    cfg_get(["timestamped_summary", "llm", "max_num_seqs"], None)
+                    or mns_default
+                )
+                ts_mbt = int(
+                    cfg_get(
+                        ["timestamped_summary", "llm", "max_num_batched_tokens"], None
+                    )
+                    or mbt_default
+                )
 
                 # Free previous engines to avoid OOM before starting a fresh instance
                 with suppress(Exception):
@@ -2117,29 +2866,47 @@ def main() -> None:
                     torch.cuda.empty_cache()  # type: ignore[attr-defined]
                 gc.collect()
 
-                llm_ts = build_llm(ts_model_id, ts_quant, ts_mml, ts_gmu, ts_mns, ts_mbt)
+                llm_ts = build_llm(
+                    ts_model_id, ts_quant, ts_mml, ts_gmu, ts_mns, ts_mbt
+                )
 
                 # 1) Build sentence-level prompt text to cut tokens
                 sentence_lines = prepare_sentence_timestamp_lines(final["segments"])
                 if verbose:
-                    logger.info(f"[post] Built sentence-level prompt with {len(sentence_lines.splitlines())} lines")
+                    logger.info(
+                        f"[post] Built sentence-level prompt with {len(sentence_lines.splitlines())} lines"
+                    )
 
                 # 2) Compute token counts and budget
                 try:
                     tokenizer_ts = get_tokenizer(llm_ts)
-                    t_in = len(tokenizer_ts.encode(sentence_lines)) if sentence_lines else 0
+                    t_in = (
+                        len(tokenizer_ts.encode(sentence_lines))
+                        if sentence_lines
+                        else 0
+                    )
                 except (ValueError, TypeError, AttributeError) as e:
                     logger.debug(f"Token counting for timestamped summary failed: {e}")
                     t_in = max(1, len(sentence_lines) // 3) if sentence_lines else 0
 
-                ts_auto_ratio = float(cfg_get(["timestamped_summary", "auto_switch_ratio"], 0.98))
-                ts_margin = int(cfg_get(["timestamped_summary", "auto_margin_tokens"], 128))
-                token_limit = int(max(0.5, min(1.0, ts_auto_ratio)) * ts_mml) - ts_margin
+                ts_auto_ratio = float(
+                    cfg_get(["timestamped_summary", "auto_switch_ratio"], 0.98)
+                )
+                ts_margin = int(
+                    cfg_get(["timestamped_summary", "auto_margin_tokens"], 128)
+                )
+                token_limit = (
+                    int(max(0.5, min(1.0, ts_auto_ratio)) * ts_mml) - ts_margin
+                )
 
-                use_map_reduce = bool(cfg_get(["timestamped_summary", "map_reduce"], False)) or (t_in and token_limit > 0 and t_in > token_limit)
+                use_map_reduce = bool(
+                    cfg_get(["timestamped_summary", "map_reduce"], False)
+                ) or (t_in and token_limit > 0 and t_in > token_limit)
 
                 if verbose:
-                    logger.info(f"[post] Timestamped summary: tokens={t_in}, limit={token_limit}, map_reduce={use_map_reduce}")
+                    logger.info(
+                        f"[post] Timestamped summary: tokens={t_in}, limit={token_limit}, map_reduce={use_map_reduce}"
+                    )
 
                 include_raw = cfg_get(["timestamped_summary", "return_raw"], False)
 
@@ -2147,31 +2914,49 @@ def main() -> None:
                     # 3) Single-pass on sentence lines
                     if verbose:
                         logger.info("[post] Using single-pass timestamped summary")
-                    timestamped_summary_raw = generate_timestamped_summary(llm_ts, sentence_lines, system_prompt)
-                    timestamped_summary = parse_llm_response(timestamped_summary_raw, include_raw=include_raw)
+                    timestamped_summary_raw = generate_timestamped_summary(
+                        llm_ts, sentence_lines, system_prompt
+                    )
+                    timestamped_summary = parse_llm_response(
+                        timestamped_summary_raw, include_raw=include_raw
+                    )
                     final["timestamped_summary"] = timestamped_summary
                 else:
                     # 4) Chunked map-reduce: pack sentence lines into token-budgeted chunks
                     if verbose:
-                        logger.info("[post] Using chunked map-reduce for timestamped summary")
+                        logger.info(
+                            "[post] Using chunked map-reduce for timestamped summary"
+                        )
 
-                    chunks = pack_sentence_lines_to_budget(llm_ts, sentence_lines, ts_mml, out_margin=ts_margin, overhead=64)
+                    chunks = pack_sentence_lines_to_budget(
+                        llm_ts,
+                        sentence_lines,
+                        ts_mml,
+                        out_margin=ts_margin,
+                        overhead=64,
+                    )
                     if verbose:
-                        logger.info(f"[post] Created {len(chunks)} chunks for timestamped summary")
+                        logger.info(
+                            f"[post] Created {len(chunks)} chunks for timestamped summary"
+                        )
 
                     chunk_msgs: list[list[dict[str, str]]] = []
                     for chunk_text in chunks:
                         if not chunk_text.strip():
                             continue
-                        chunk_msgs.append([
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": chunk_text},
-                        ])
+                        chunk_msgs.append(
+                            [
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": chunk_text},
+                            ]
+                        )
 
                     # Keep chunk outputs tight to maximize input space
                     params_max = min(192, ts_margin)
                     if chunk_msgs:
-                        outs = generate_chat_batch(llm_ts, chunk_msgs, temperature=0.2, max_tokens=params_max)
+                        outs = generate_chat_batch(
+                            llm_ts, chunk_msgs, temperature=0.2, max_tokens=params_max
+                        )
                     else:
                         outs = []
 
@@ -2192,6 +2977,7 @@ def main() -> None:
 
                     # 6) Deduplicate and sort by time
                     from difflib import SequenceMatcher as _SequenceMatcher
+
                     all_ts.sort(key=lambda x: x[1])
                     merged: list[tuple[str, float]] = []
                     for text, s in all_ts:
@@ -2200,23 +2986,36 @@ def main() -> None:
                         if merged:
                             prev_text, ps = merged[-1]
                             # near-duplicate textual similarity or very close in time window
-                            sim = _SequenceMatcher(None, prev_text.lower(), text.lower()).ratio()
+                            sim = _SequenceMatcher(
+                                None, prev_text.lower(), text.lower()
+                            ).ratio()
                             if sim >= 0.85 or abs(s - ps) <= 2.0:
                                 continue
                         merged.append((text, s))
 
                     # 7) Assemble final object
-                    summary_text = " ".join([f"[{int(t//3600):02d}:{int((t%3600)//60):02d}:{int(t%60):02d}] {txt}" for (txt, t) in merged])
+                    summary_text = " ".join(
+                        [
+                            f"[{int(t//3600):02d}:{int((t%3600)//60):02d}:{int(t%60):02d}] {txt}"
+                            for (txt, t) in merged
+                        ]
+                    )
                     final_obj = {
                         "summary_text": summary_text,
-                        "timestamps": [{"text": txt, "start": s} for (txt, s) in merged]
+                        "timestamps": [
+                            {"text": txt, "start": s} for (txt, s) in merged
+                        ],
                     }
                     if include_raw and raw_concat:
-                        final_obj["raw"] = "\n\n".join([r for r in raw_concat if r.strip()])
+                        final_obj["raw"] = "\n\n".join(
+                            [r for r in raw_concat if r.strip()]
+                        )
                     final["timestamped_summary"] = final_obj
 
                     if verbose:
-                        logger.info(f"[post] Merged {len(merged)} unique timestamped topics")
+                        logger.info(
+                            f"[post] Merged {len(merged)} unique timestamped topics"
+                        )
 
                 # Free timestamp model after use
                 with suppress(Exception):
@@ -2226,7 +3025,6 @@ def main() -> None:
                 gc.collect()
             except (RuntimeError, ValueError, OSError) as e:
                 logger.warning(f"[post] Failed to generate timestamped summary: {e}")
-
 
     # Now it's safe to free any remaining engines (the process exits anyway)
     if not reuse:
@@ -2240,13 +3038,20 @@ def main() -> None:
             torch.cuda.empty_cache()  # type: ignore[attr-defined]
     gc.collect()
 
+    final["title"] = summary.get(
+        "title", ""
+    )  # Promote title to top-level for easier access
     final.update(
         {
             "segments": punct_segments,
             "transcript_punct": transcript_punct,
             "summary": summary,
             # New fields produced by postprocess for downstream consumers
-            **({"quality_metrics": quality_metrics} if quality_metrics is not None else {}),
+            **(
+                {"quality_metrics": quality_metrics}
+                if quality_metrics is not None
+                else {}
+            ),
             **({"diffs": human_diff} if human_diff is not None else {}),
             "metadata": {
                 **asr.get("metadata", {}),
@@ -2261,6 +3066,7 @@ def main() -> None:
     out_path = Path(args.out)
     if args.auto_outdir:
         from datetime import datetime
+
         # If ASR JSON already lives under paths.out_dir/<name>/asr.json, reuse that folder
         base_root = Path(str(cfg_get(["paths", "out_dir"], "data/output")))
         try:
@@ -2285,14 +3091,19 @@ def main() -> None:
         out_path = base_dir / "final.json"
 
         # Optional separate files per config (supports legacy and structured OutputConfig)
-        out_formats = []
+        raw_formats: list[Any] = []
         try:
             fmts = cfg_get(["output", "formats"], [])
             if isinstance(fmts, (list, tuple)):
-                out_formats = [str(x).lower() for x in fmts]
+                raw_formats = list(fmts)
         except (ValueError, KeyError, TypeError):
-            out_formats = []
-        write_text_files = bool(cfg_get(["output", "write_separate_files"], False)) or ("text" in out_formats or "md" in out_formats)
+            raw_formats = []
+        out_formats = normalize_output_formats(raw_formats)
+        if not out_formats:
+            out_formats.add("json")
+        write_text_files = bool(cfg_get(["output", "write_separate_files"], False)) or (
+            "txt" in out_formats or "md" in out_formats
+        )
 
         if write_text_files:
             # Legacy defaults
@@ -2321,7 +3132,9 @@ def main() -> None:
                 if wrap_width_cfg is None:
                     wrap_width_cfg = cfg_get(["output", "wrap_width"], 100)
                 try:
-                    wrap_width = int(wrap_width_cfg) if wrap_width_cfg is not None else 0
+                    wrap_width = (
+                        int(wrap_width_cfg) if wrap_width_cfg is not None else 0
+                    )
                 except (ValueError, TypeError) as e:
                     logger.debug(f"Failed to parse wrap_width: {e}")
                     wrap_width = 0
@@ -2356,60 +3169,75 @@ def main() -> None:
                 if abstract:
                     sf.write(abstract.strip() + "\n")
 
-        # Write timed text formats if requested via formats
-        try:
-            fmts = set(out_formats)
-        except (TypeError, ValueError) as e:
-            logger.debug(f"Failed to parse output formats: {e}")
-            fmts = set()
+        subtitle_cfg = getattr(cfg.output, "transcript", None)  # type: ignore[attr-defined]
+        subtitle_language = str(
+            final.get("metadata", {}).get("alignment", {}).get("language")
+            or final.get("metadata", {}).get("language")
+            or getattr(getattr(cfg.asr, "whisperx", None), "language", "en")
+            or "en"
+        ).lower()
+        if subtitle_language == "auto":
+            subtitle_language = "en"
 
-        def _fmt_time_srt(t: float) -> str:
-            # SRT uses comma milliseconds
-            import math as _m
-            t = max(0.0, float(t))
-            hh = int(t // 3600)
-            mm = int((t % 3600) // 60)
-            ss = int(t % 60)
-            ms = _m.floor((t - _m.floor(t)) * 1000.0)
-            return f"{hh:02d}:{mm:02d}:{ss:02d},{ms:03d}"
+        subtitle_settings = {
+            "max_chars_per_line": (
+                getattr(subtitle_cfg, "subtitle_max_chars_per_line", 42)
+                if subtitle_cfg
+                else 42
+            ),
+            "max_lines": (
+                getattr(subtitle_cfg, "subtitle_max_lines", 2) if subtitle_cfg else 2
+            ),
+            "complex_languages": (
+                getattr(subtitle_cfg, "subtitle_complex_languages", ["zh", "ja", "ko"])
+                if subtitle_cfg
+                else ["zh", "ja", "ko"]
+            ),
+        }
+        highlight_words = (
+            bool(getattr(subtitle_cfg, "subtitle_highlight_words", False))
+            if subtitle_cfg
+            else False
+        )
 
-        def _fmt_time_vtt(t: float) -> str:
-            # VTT uses dot milliseconds
-            import math as _m
-            t = max(0.0, float(t))
-            hh = int(t // 3600)
-            mm = int((t % 3600) // 60)
-            ss = int(t % 60)
-            ms = _m.floor((t - _m.floor(t)) * 1000.0)
-            return f"{hh:02d}:{mm:02d}:{ss:02d}.{ms:03d}"
+        subtitle_units: list[dict[str, Any]] = []
+        if {"srt", "vtt", "tsv"} & out_formats and final.get("segments"):
+            subtitle_units = prepare_subtitle_units(
+                final.get("segments", []),
+                language=subtitle_language,
+                settings=subtitle_settings,
+            )
+            final.setdefault("metadata", {}).setdefault(
+                "subtitle",
+                {
+                    "language": subtitle_language,
+                    "max_chars_per_line": subtitle_settings["max_chars_per_line"],
+                    "max_lines": subtitle_settings["max_lines"],
+                    "highlight_words": highlight_words,
+                },
+            )
 
-        # Prepare filenames from structured config when available
         srt_name = str(cfg_get(["output", "transcript", "file_srt"], "transcript.srt"))
         vtt_name = str(cfg_get(["output", "transcript", "file_vtt"], "transcript.vtt"))
+        tsv_name = str(cfg_get(["output", "transcript", "file_tsv"], "transcript.tsv"))
 
-        if "srt" in fmts and final.get("segments"):
-            cues = []
-            for idx, seg in enumerate(final["segments"], start=1):
-                start = float(seg.get("start", 0.0) or 0.0)
-                end = float(seg.get("end", start) or start)
-                text = str(seg.get("text_punct") or seg.get("text") or "").strip()
-                if not text:
-                    continue
-                cues.append(f"{idx}\n{_fmt_time_srt(start)} --> {_fmt_time_srt(end)}\n{text}\n")
-            (base_dir / srt_name).write_text("\n".join(cues), encoding="utf-8")
+        if "srt" in out_formats and subtitle_units:
+            (base_dir / srt_name).write_text(
+                format_srt(subtitle_units, highlight=highlight_words),
+                encoding="utf-8",
+            )
 
-        if "vtt" in fmts and final.get("segments"):
-            lines = ["WEBVTT", ""]
-            for seg in final["segments"]:
-                start = float(seg.get("start", 0.0) or 0.0)
-                end = float(seg.get("end", start) or start)
-                text = str(seg.get("text_punct") or seg.get("text") or "").strip()
-                if not text:
-                    continue
-                lines.append(f"{_fmt_time_vtt(start)} --> {_fmt_time_vtt(end)}")
-                lines.append(text)
-                lines.append("")
-            (base_dir / vtt_name).write_text("\n".join(lines), encoding="utf-8")
+        if "vtt" in out_formats and subtitle_units:
+            (base_dir / vtt_name).write_text(
+                format_vtt(subtitle_units, highlight=highlight_words),
+                encoding="utf-8",
+            )
+
+        if "tsv" in out_formats and subtitle_units:
+            (base_dir / tsv_name).write_text(
+                format_tsv(subtitle_units),
+                encoding="utf-8",
+            )
 
     save_json(out_path, final)
 

@@ -515,7 +515,7 @@ def main() -> None:
         "--model-dir",
         type=str,
         required=False,
-        help="Path to local HuggingFace checkpoint repo (ChunkFormer)",
+        help="Override ChunkFormer checkpoint directory (defaults to config.paths.chunkformer_checkpoint)",
     )
     parser.add_argument("--out", type=str, required=True, help="Path to output JSON")
     parser.add_argument(
@@ -526,42 +526,45 @@ def main() -> None:
     parser.add_argument(
         "--total-batch-duration",
         type=int,
-        default=1800,
-        help="Total audio duration per batch in seconds (default 1800)",
+        default=None,
+        help="Total audio duration per batch in seconds (default from config.asr.total_batch_duration_s)",
     )
     parser.add_argument(
-        "--chunk-size", type=int, default=64, help="Chunk size (default 64)"
+        "--chunk-size",
+        type=int,
+        default=None,
+        help="Chunk size (default from config.asr.chunk_size)",
     )
     parser.add_argument(
         "--left-context-size",
         type=int,
-        default=128,
-        help="Left context size (default 128)",
+        default=None,
+        help="Left context size (default from config.asr.left_context_size)",
     )
     parser.add_argument(
         "--right-context-size",
         type=int,
-        default=128,
-        help="Right context size (default 128)",
+        default=None,
+        help="Right context size (default from config.asr.right_context_size)",
     )
     parser.add_argument(
         "--device",
         type=str,
-        default="cuda" if torch.cuda.is_available() else "cpu",
-        help="Device to run the model on (cuda/cpu)",
+        default=None,
+        help="Device to run the model on (defaults to config.asr.device)",
     )
     parser.add_argument(
         "--autocast-dtype",
         type=str,
         choices=["fp32", "bf16", "fp16"],
-        default="fp16" if torch.cuda.is_available() else None,
-        help="Autocast dtype (default fp16 on CUDA)",
+        default=None,
+        help="Autocast dtype (default from config.asr.autocast_dtype)",
     )
     parser.add_argument(
         "--chunkformer-dir",
         type=str,
-        default=str(Path(__file__).resolve().parents[1] / "src" / "chunkformer"),
-        help="Path to chunkformer source directory",
+        default=None,
+        help="Path to chunkformer source directory (defaults to config.paths.chunkformer_dir)",
     )
 
     args = parser.parse_args()
@@ -585,6 +588,38 @@ def main() -> None:
         raise SystemExit(
             "Missing --model-dir and paths.chunkformer_checkpoint in configuration"
         )
+
+    total_batch_duration = (
+        args.total_batch_duration
+        if args.total_batch_duration is not None
+        else cfg.asr.total_batch_duration_s
+    )
+    chunk_size = (
+        args.chunk_size if args.chunk_size is not None else cfg.asr.chunk_size
+    )
+    left_context_size = (
+        args.left_context_size
+        if args.left_context_size is not None
+        else cfg.asr.left_context_size
+    )
+    right_context_size = (
+        args.right_context_size
+        if args.right_context_size is not None
+        else cfg.asr.right_context_size
+    )
+    device_value = args.device if args.device is not None else cfg.asr.device
+    if isinstance(device_value, str) and device_value.lower() == "auto":
+        device_value = "cuda" if torch.cuda.is_available() else "cpu"
+    autocast_dtype = (
+        args.autocast_dtype
+        if args.autocast_dtype is not None
+        else cfg.asr.autocast_dtype
+    )
+    chunkformer_dir = Path(
+        args.chunkformer_dir
+        if args.chunkformer_dir is not None
+        else cfg.paths.chunkformer_dir
+    )
 
     # Auto output dir per input file, if requested
     out_path = Path(args.out)
@@ -610,15 +645,13 @@ def main() -> None:
         audio_path=Path(args.audio),
         model_checkpoint=Path(model_dir),
         out_path=out_path,
-        total_batch_duration=int(
-            args.total_batch_duration or cfg.asr.total_batch_duration_s
-        ),
-        chunk_size=int(args.chunk_size or cfg.asr.chunk_size),
-        left_context_size=int(args.left_context_size or cfg.asr.left_context_size),
-        right_context_size=int(args.right_context_size or cfg.asr.right_context_size),
-        device_str=str(args.device or cfg.asr.device),
-        autocast_dtype=(args.autocast_dtype or cfg.asr.autocast_dtype),
-        chunkformer_dir=Path(args.chunkformer_dir or cfg.paths.chunkformer_dir),
+        total_batch_duration=int(total_batch_duration),
+        chunk_size=int(chunk_size),
+        left_context_size=int(left_context_size),
+        right_context_size=int(right_context_size),
+        device_str=str(device_value),
+        autocast_dtype=autocast_dtype,
+        chunkformer_dir=chunkformer_dir,
     )
 
 

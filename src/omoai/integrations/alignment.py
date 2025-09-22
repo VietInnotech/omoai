@@ -6,8 +6,11 @@ from __future__ import annotations
 
 import math
 import subprocess
+from collections import defaultdict
+from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, TypedDict
+from functools import lru_cache
+from typing import Any, NotRequired, TypedDict
 
 import numpy as np
 import pandas as pd
@@ -30,6 +33,24 @@ TOKENS_PER_SECOND = SAMPLE_RATE // N_SAMPLES_PER_TOKEN  # 20ms per audio token
 # Language configurations
 LANGUAGES_WITHOUT_SPACES = ["ja", "zh"]
 PUNKT_ABBREVIATIONS = ['dr', 'vs', 'mr', 'mrs', 'prof']
+
+PUNKT_LANG_FALLBACKS = {
+    "en": "english",
+    "vi": "english",
+    "de": "german",
+    "fr": "french",
+    "es": "spanish",
+    "pt": "portuguese",
+    "it": "italian",
+    "nl": "dutch",
+    "ca": "catalan",
+    "ru": "russian",
+    "pl": "polish",
+    "uk": "ukrainian",
+    "zh": "chinese",
+    "ja": "english",
+    "ko": "korean",
+}
 
 # Default alignment models
 DEFAULT_ALIGN_MODELS_TORCH = {
@@ -78,6 +99,68 @@ DEFAULT_ALIGN_MODELS_HF = {
 }
 
 # Type definitions
+
+
+@lru_cache(maxsize=32)
+def _resolve_sentence_tokenizer(language_code: str | None):
+    """Return a Punkt sentence tokenizer for the given language, or None."""
+    try:
+        from nltk.data import load
+        from nltk.tokenize.punkt import PunktParameters, PunktSentenceTokenizer
+    except ImportError:  # pragma: no cover - optional dependency
+        return None
+
+    candidates: list[str] = []
+    if language_code:
+        lang = language_code.lower()
+        candidates.append(lang)
+        mapped = PUNKT_LANG_FALLBACKS.get(lang)
+        if mapped:
+            candidates.append(mapped)
+    candidates.extend(["english"])
+
+    for cand in candidates:
+        try:
+            tokenizer = load(f"tokenizers/punkt/{cand}.pickle")
+        except (LookupError, OSError):
+            continue
+        try:
+            tokenizer._params.abbrev_types.update(PUNKT_ABBREVIATIONS)
+        except AttributeError:
+            pass
+        return tokenizer
+
+    try:
+        params = PunktParameters()
+        params.abbrev_types.update(PUNKT_ABBREVIATIONS)
+        return PunktSentenceTokenizer(params)
+    except Exception:  # pragma: no cover - final fallback
+        return None
+
+
+def _fallback_sentence_spans(text: str) -> list[tuple[int, int]]:
+    """Lightweight sentence segmentation fallback when Punkt is unavailable."""
+    if not text:
+        return [(0, 0)]
+
+    spans: list[tuple[int, int]] = []
+    start = 0
+    n = len(text)
+    for idx, ch in enumerate(text):
+        if ch in ".!?…":
+            end = idx + 1
+            while end < n and text[end].isspace():
+                end += 1
+            if end > start:
+                spans.append((start, end))
+                start = end
+    if start < n:
+        spans.append((start, n))
+    if not spans:
+        return [(0, n)]
+    return spans
+
+
 class SingleWordSegment(TypedDict):
     word: str
     start: float
@@ -106,11 +189,14 @@ class SingleAlignedSegment(TypedDict):
     end: float
     text: str
     words: list[SingleWordSegment]
-    chars: list[SingleCharSegment] | None
+    chars: NotRequired[list[SingleCharSegment]]
+    segment_index: NotRequired[int]
+    sentence_index: NotRequired[int]
 
 class AlignedTranscriptionResult(TypedDict):
     segments: list[SingleAlignedSegment]
     word_segments: list[SingleWordSegment]
+    sentence_segments: NotRequired[list[SingleAlignedSegment]]
 
 # Data structures for alignment
 @dataclass
@@ -360,9 +446,9 @@ def backtrack_beam(trellis, emission, tokens, blank_id=0, beam_width=5):
             p_stay = emission[t - 1, blank_id]
             p_change = get_wildcard_emission(emission[t - 1], [tokens[j]], blank_id)[0]
 
-            # Properly compute transition scores
-            stay_score = trellis[t - 1, j] + p_stay
-            change_score = trellis[t - 1, j - 1] + p_change if j > 0 else float('-inf')
+            # Mirror WhisperX: trellis already includes emission log-probs, so reuse it directly
+            stay_score = trellis[t - 1, j]
+            change_score = trellis[t - 1, j - 1] if j > 0 else float('-inf')
 
             # Stay
             if not math.isinf(stay_score):
@@ -482,10 +568,13 @@ def align(
     model_dictionary = align_model_metadata["dictionary"]
     model_lang = align_model_metadata["language"]
     model_type = align_model_metadata["type"]
+    sentence_tokenizer = _resolve_sentence_tokenizer(model_lang)
 
     # Preprocess to keep only characters in dictionary
     total_segments = len(transcript)
     segment_data: dict[int, SegmentData] = {}
+    sentence_counter = 0
+    sentence_segments_all: list[dict[str, Any]] = []
 
     for sdx, segment in enumerate(transcript):
         if print_progress:
@@ -531,8 +620,21 @@ def align(
                 # Index for placeholder
                 clean_wdx.append(wdx)
 
-        # Simple sentence splitting (NLTK not available, using basic approach)
-        sentence_spans = [(0, len(text))]  # Single sentence for now
+        sentence_spans: list[tuple[int, int]] = [(0, len(text))]
+        if text.strip():
+            spans: list[tuple[int, int]] = []
+            if sentence_tokenizer is not None:
+                try:
+                    spans = [
+                        (max(0, int(start)), min(len(text), int(end)))
+                        for start, end in sentence_tokenizer.span_tokenize(text)
+                        if end > start
+                    ]
+                except (ValueError, LookupError):  # pragma: no cover - tokenizer error
+                    spans = []
+            if not spans:
+                spans = _fallback_sentence_spans(text)
+            sentence_spans = spans or [(0, len(text))]
 
         segment_data[sdx] = {
             "clean_char": clean_char,
@@ -626,6 +728,14 @@ def align(
 
         ratio = duration * waveform_segment.size(0) / (trellis.size(0) - 1)
 
+        if len(char_segments) < len(segment_data[sdx]["clean_cdx"]):
+            print(
+                f'Failed to align segment ("{segment["text"]}"): '
+                f'char_segments shorter than clean_cdx, resorting to original...'
+            )
+            aligned_segments.append(aligned_seg)
+            continue
+
         # Assign timestamps to aligned characters
         char_segments_arr = []
         word_idx = 0
@@ -696,6 +806,7 @@ def align(
                 "start": sentence_start,
                 "end": sentence_end,
                 "words": sentence_words,
+                "segment_index": sdx,
             })
 
             if return_char_alignments:
@@ -709,22 +820,48 @@ def align(
         aligned_subsegments["start"] = interpolate_nans(aligned_subsegments["start"], method=interpolate_method)
         aligned_subsegments["end"] = interpolate_nans(aligned_subsegments["end"], method=interpolate_method)
 
-        # Concatenate sentences with same timestamps
-        agg_dict = {"text": " ".join, "words": "sum"}
+        # Concatenate sentences with same timestamps per original segment
+        agg_dict = {"text": " ".join, "words": "sum", "segment_index": "first"}
         if model_lang in LANGUAGES_WITHOUT_SPACES:
             agg_dict["text"] = "".join
         if return_char_alignments:
             agg_dict["chars"] = "sum"
-        aligned_subsegments = aligned_subsegments.groupby(["start", "end"], as_index=False).agg(agg_dict)
-        aligned_subsegments = aligned_subsegments.to_dict('records')
-        aligned_segments += aligned_subsegments
+        aligned_subsegments = (
+            aligned_subsegments.groupby(["segment_index", "start", "end"], as_index=False)
+            .agg(agg_dict)
+            .to_dict('records')
+        )
+
+        normalized_subsegments: list[dict[str, Any]] = []
+        for sub in aligned_subsegments:
+            seg_index = sub.get("segment_index", sdx)
+            try:
+                seg_index = int(seg_index)
+            except (TypeError, ValueError):
+                seg_index = sdx
+            sub["segment_index"] = seg_index
+            sub["text"] = (sub.get("text") or "").strip()
+            start_val = float(sub.get("start", t1))
+            end_val = float(sub.get("end", t2))
+            sub["start"] = start_val if math.isfinite(start_val) else None
+            sub["end"] = end_val if math.isfinite(end_val) else None
+            sub["sentence_index"] = sentence_counter
+            sentence_counter += 1
+            sentence_segments_all.append(deepcopy(sub))
+            normalized_subsegments.append(sub)
+
+        aligned_segments += normalized_subsegments
 
     # Create word_segments list
     word_segments: list[SingleWordSegment] = []
     for segment in aligned_segments:
-        word_segments += segment["words"]
+        word_segments += segment.get("words", [])
 
-    return {"segments": aligned_segments, "word_segments": word_segments}
+    return {
+        "segments": aligned_segments,
+        "word_segments": word_segments,
+        "sentence_segments": sentence_segments_all or deepcopy(aligned_segments),
+    }
 
 # Compatibility functions for existing API
 def to_whisperx_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -829,23 +966,79 @@ def merge_alignment_back(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Merge the aligned words/chars back into our original segment objects."""
     aligned_segments = aligned_result.get("segments", []) or []
+    sentence_segments = aligned_result.get("sentence_segments", []) or []
     word_segments = aligned_result.get("word_segments", []) or []
 
     out = [dict(s) for s in original_segments]
-    # Attach words/chars to corresponding non-empty text segments in order
+    sentences_by_segment: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    if sentence_segments:
+        for sent in sentence_segments:
+            idx = sent.get("segment_index")
+            if idx is None:
+                continue
+            try:
+                idx_int = int(idx)
+            except (TypeError, ValueError):  # pragma: no cover - defensive cast
+                continue
+            sentences_by_segment[idx_int].append(sent)
+
     j = 0
-    for i, s in enumerate(out):
-        text = (s.get("text_raw") or s.get("text") or "").strip()
+    for idx, seg in enumerate(out):
+        text = (seg.get("text_raw") or seg.get("text") or "").strip()
         if not text:
             continue
+
+        segment_sentences = sentences_by_segment.get(idx)
+        if segment_sentences:
+            segment_sentences = sorted(
+                segment_sentences,
+                key=lambda item: (
+                    float(item.get("start", 0.0) or 0.0),
+                    int(item.get("sentence_index", 0) or 0),
+                ),
+            )
+            aggregated_words: list[SingleWordSegment] = []
+            aggregated_chars: list[SingleCharSegment] = []
+            payload_sentences: list[dict[str, Any]] = []
+            for entry in segment_sentences:
+                words = [dict(word) for word in (entry.get("words") or [])]
+                aggregated_words.extend(words)
+                sentence_payload: dict[str, Any] = {
+                    "text": (entry.get("text") or "").strip(),
+                    "words": words,
+                }
+                start_val = entry.get("start")
+                end_val = entry.get("end")
+                if start_val is not None:
+                    sentence_payload["start"] = float(start_val)
+                if end_val is not None:
+                    sentence_payload["end"] = float(end_val)
+                if "sentence_index" in entry:
+                    try:
+                        sentence_payload["sentence_index"] = int(entry["sentence_index"])
+                    except (TypeError, ValueError):
+                        pass
+                if "chars" in entry and entry.get("chars"):
+                    chars = [dict(char) for char in entry.get("chars", [])]
+                    if chars:
+                        sentence_payload["chars"] = chars
+                        aggregated_chars.extend(chars)
+                payload_sentences.append(sentence_payload)
+            if payload_sentences:
+                seg["sentences"] = payload_sentences
+            if aggregated_words:
+                seg["words"] = aggregated_words
+            if aggregated_chars:
+                seg["chars"] = aggregated_chars
+            j += len(segment_sentences)
+            continue
+
         if j >= len(aligned_segments):
-            break
+            continue
         al = aligned_segments[j] or {}
-        # Preserve existing fields and add enrichments
         if al.get("words"):
-            s["words"] = al["words"]
-        if "chars" in al:
-            s["chars"] = al["chars"]
-        out[i] = s
+            seg["words"] = [dict(word) for word in al.get("words", [])]
+        if "chars" in al and al.get("chars"):
+            seg["chars"] = [dict(char) for char in al.get("chars", [])]
         j += 1
     return out, list(word_segments)

@@ -27,12 +27,29 @@ llm: &base_llm
   trust_remote_code: false
 
 asr:
+  engine: whisperx # chunkformer | whisperx
   total_batch_duration_s: 3600 # 1 hour max (increased)
   chunk_size: 64
   left_context_size: 128
   right_context_size: 128
   device: auto
   autocast_dtype: fp16
+  whisperx:
+    model_path: ./models/whisperx/EraX
+    device: auto
+    compute_type: int8_float16
+    language: vi
+    beam_size: 5
+    temperature: 0.0
+    temperature_schedule: null # Optional fallback temperatures (list)
+    temperature_increment_on_fallback: 0.2
+    compression_ratio_threshold: 2.4
+    logprob_threshold: -1.0
+    no_speech_threshold: 0.6
+    max_chunk_duration_s: null
+    vad_method: silero
+    vad_onset: 0.50
+    vad_offset: 0.363
 
 punctuation:
   llm:
@@ -208,6 +225,10 @@ output:
     # timestamps is currently unused by API; timed text writing is handled in scripts
     timestamps: "clock" # Format: "none", "s", "ms", "clock"
     wrap_width: 100 # Text wrapping width (0 = no wrapping)
+    subtitle_max_chars_per_line: 42
+    subtitle_max_lines: 2
+    subtitle_highlight_words: false
+    subtitle_complex_languages: ["zh", "ja", "ko"]
 
     # Filename configuration
     file_raw: "transcript.raw.txt"
@@ -215,6 +236,7 @@ output:
     file_srt: "transcript.srt"
     file_vtt: "transcript.vtt"
     file_segments: "segments.json"
+    file_tsv: "transcript.tsv"
 
   # Summary output configuration
   summary:

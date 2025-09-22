@@ -146,6 +146,13 @@ class TestConfigValidation(unittest.TestCase):
         expected = "cuda" if torch.cuda.is_available() else "cpu"
         self.assertEqual(asr_config.device, expected)
 
+    def test_whisperx_defaults(self):
+        """Ensure WhisperX configuration has expected defaults."""
+        cfg = ASRConfig(engine="whisperx")
+        self.assertEqual(cfg.engine, "whisperx")
+        self.assertEqual(cfg.whisperx.model_path, Path("models/whisperx/EraX"))
+        self.assertEqual(cfg.whisperx.compute_type, "int8_float16")
+
     def test_environment_variable_override(self):
         """Test environment variable override functionality."""
         with patch.dict(
