@@ -15,7 +15,7 @@ from pathlib import Path
 try:
     # Prefer centralized config; fall back gracefully if unavailable
     from omoai.config.schemas import get_config  # type: ignore
-except Exception:  # pragma: no cover - defensive import
+except (ImportError, AttributeError):  # pragma: no cover - defensive import
     get_config = None  # type: ignore
 
 from omoai.api.exceptions import AudioProcessingException
@@ -57,7 +57,7 @@ def run_asr_script(
         if get_config is not None:
             cfg = get_config()
             stream = bool(getattr(cfg.api, "stream_subprocess_output", False))
-    except Exception:
+    except (AttributeError, TypeError):
         stream = False
     env = os.environ.copy()
     if stream:

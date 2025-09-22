@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -21,7 +22,7 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         try:
             response.headers["X-Request-ID"] = request_id
-        except Exception:
-            pass
+        except (TypeError, ValueError) as err:
+            logging.getLogger(__name__).debug("Failed to set X-Request-ID header", exc_info=err)
         return response
 

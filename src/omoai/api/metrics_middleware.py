@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
@@ -25,8 +26,8 @@ class MetricsMiddleware(BaseHTTPMiddleware):
             try:
                 _METRICS["request_total"] += 1
                 _METRICS["request_latency_sum"] += float(elapsed)
-            except Exception:
-                pass
+            except (TypeError, ValueError) as err:
+                logging.getLogger(__name__).debug("Failed to update metrics", exc_info=err)
 
 
 @get(path="/metrics")
@@ -35,7 +36,7 @@ async def metrics_endpoint() -> Response:
     try:
         total = int(_METRICS.get("request_total", 0))
         latency_sum = float(_METRICS.get("request_latency_sum", 0.0))
-    except Exception:
+    except (TypeError, ValueError):
         total = 0
         latency_sum = 0.0
     lines = [

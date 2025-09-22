@@ -46,7 +46,7 @@ class AlignmentConfig(BaseModel):
             try:
                 import torch
                 return "cuda" if torch.cuda.is_available() else "cpu"
-            except Exception:
+            except (ImportError, RuntimeError):
                 return "cpu"
         return v
 
@@ -334,7 +334,7 @@ class VADConfig(BaseModel):
                 import torch  # type: ignore
 
                 return "cuda" if torch.cuda.is_available() else "cpu"
-            except Exception:
+            except (ImportError, RuntimeError):
                 return "cpu"
         return v
 

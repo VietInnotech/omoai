@@ -28,6 +28,8 @@ class JobManager:
     def __init__(self) -> None:
         self._jobs: dict[str, JobRecord] = {}
         self._lock = asyncio.Lock()
+        # Track background tasks to satisfy linter and allow optional lifecycle management
+        self._tasks: set[asyncio.Task[None]] = set()
 
     async def submit_pipeline_job(
         self,
@@ -58,8 +60,10 @@ class JobManager:
             finally:
                 record.ended_at = time.time()
 
-        # Fire and forget
-        asyncio.create_task(_runner())
+        # Fire and forget, but keep a reference per linter guidance
+        task: asyncio.Task[None] = asyncio.create_task(_runner())
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
         return job_id
 
     async def get(self, job_id: str) -> JobRecord | None:

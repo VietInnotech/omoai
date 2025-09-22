@@ -93,7 +93,7 @@ def test_english_model():
     print("\nTesting English model...")
     try:
         device = "cpu"
-        model, metadata = load_align_model("en", device, model_dir="/home/cetech/omoai/models")
+        _model, metadata = load_align_model("en", device, model_dir="/home/cetech/omoai/models")
         print(f"✓ English model loaded: {metadata['type']}")
         return True
     except Exception as e:

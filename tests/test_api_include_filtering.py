@@ -57,7 +57,7 @@ class TestAPIIncludeFiltering:
     async def test_include_summary_default(self, mock_pipeline_request, mock_final_obj):
         """Test that summary is included by default when not specified."""
         # Mock the file operations and subprocess calls
-        with patch('builtins.open', create=True) as mock_open, \
+        with patch('builtins.open', create=True) as _, \
              patch('json.load', return_value=mock_final_obj), \
              patch('os.urandom', return_value=b'fake_random'), \
              patch('pathlib.Path.mkdir'), \
@@ -73,7 +73,7 @@ class TestAPIIncludeFiltering:
             # Configure output_params with no include list (should include all by default)
             output_params = OutputFormatParams()
 
-            result, raw_transcript = await _run_full_pipeline_script(mock_pipeline_request, output_params)
+            result, _raw_transcript = await _run_full_pipeline_script(mock_pipeline_request, output_params)
 
             # Summary should be included by default
             assert result.summary == {
@@ -88,7 +88,7 @@ class TestAPIIncludeFiltering:
     async def test_exclude_summary_from_include_list(self, mock_pipeline_request, mock_final_obj):
         """Summary (and raw text) should be excluded when not in include list."""
         # Mock the file operations and subprocess calls
-        with patch('builtins.open', create=True) as mock_open, \
+        with patch('builtins.open', create=True) as _, \
              patch('json.load', return_value=mock_final_obj), \
              patch('os.urandom', return_value=b'fake_random'), \
              patch('pathlib.Path.mkdir'), \
@@ -106,7 +106,7 @@ class TestAPIIncludeFiltering:
                 include=["transcript_punct", "segments", "timestamped_summary"]
             )
 
-            result, raw_transcript = await _run_full_pipeline_script(mock_pipeline_request, output_params)
+            result, _raw_transcript = await _run_full_pipeline_script(mock_pipeline_request, output_params)
 
             # Summary should be excluded and raw summary suppressed
             assert result.summary == {}
@@ -118,7 +118,7 @@ class TestAPIIncludeFiltering:
     async def test_exclude_timestamped_summary_from_include_list(self, mock_pipeline_request, mock_final_obj):
         """Test that timestamped_summary is excluded when not in include list."""
         # Mock the file operations and subprocess calls
-        with patch('builtins.open', create=True) as mock_open, \
+        with patch('builtins.open', create=True) as _, \
              patch('json.load', return_value=mock_final_obj), \
              patch('os.urandom', return_value=b'fake_random'), \
              patch('pathlib.Path.mkdir'), \
@@ -136,7 +136,7 @@ class TestAPIIncludeFiltering:
                 include=["transcript_punct", "segments", "summary"]
             )
 
-            result, raw_transcript = await _run_full_pipeline_script(mock_pipeline_request, output_params)
+            result, _raw_transcript = await _run_full_pipeline_script(mock_pipeline_request, output_params)
 
             # Summary should be included
             assert result.summary == {
@@ -151,7 +151,7 @@ class TestAPIIncludeFiltering:
     @pytest.mark.asyncio
     async def test_summary_fields_filtering(self, mock_pipeline_request, mock_final_obj):
         """Summary fields list should control returned keys."""
-        with patch('builtins.open', create=True) as mock_open, \
+        with patch('builtins.open', create=True) as _, \
              patch('json.load', return_value=mock_final_obj), \
              patch('os.urandom', return_value=b'fake_random'), \
              patch('pathlib.Path.mkdir'), \
@@ -180,7 +180,7 @@ class TestAPIIncludeFiltering:
     @pytest.mark.asyncio
     async def test_summary_raw_text_omitted_without_summary(self, mock_pipeline_request, mock_final_obj):
         """Raw text should not be returned when summary is excluded."""
-        with patch('builtins.open', create=True) as mock_open, \
+        with patch('builtins.open', create=True) as _, \
              patch('json.load', return_value=mock_final_obj), \
              patch('os.urandom', return_value=b'fake_random'), \
              patch('pathlib.Path.mkdir'), \
@@ -206,7 +206,7 @@ class TestAPIIncludeFiltering:
     @pytest.mark.asyncio
     async def test_summary_none_parameter_excludes_summary(self, mock_pipeline_request, mock_final_obj):
         """summary=none should suppress the structured summary even without include filters."""
-        with patch('builtins.open', create=True) as mock_open, \
+        with patch('builtins.open', create=True) as _, \
              patch('json.load', return_value=mock_final_obj), \
              patch('os.urandom', return_value=b'fake_random'), \
              patch('pathlib.Path.mkdir'), \
@@ -229,7 +229,7 @@ class TestAPIIncludeFiltering:
     @pytest.mark.asyncio
     async def test_include_overrides_summary_none(self, mock_pipeline_request, mock_final_obj):
         """Explicit include should restore summary even when summary=none."""
-        with patch('builtins.open', create=True) as mock_open, \
+        with patch('builtins.open', create=True) as _, \
              patch('json.load', return_value=mock_final_obj), \
              patch('os.urandom', return_value=b'fake_random'), \
              patch('pathlib.Path.mkdir'), \
@@ -261,7 +261,7 @@ class TestAPIIncludeFiltering:
     async def test_exclude_both_summary_fields(self, mock_pipeline_request, mock_final_obj):
         """Test that both summary and timestamped_summary are excluded when not in include list."""
         # Mock the file operations and subprocess calls
-        with patch('builtins.open', create=True) as mock_open, \
+        with patch('builtins.open', create=True) as _, \
              patch('json.load', return_value=mock_final_obj), \
              patch('os.urandom', return_value=b'fake_random'), \
              patch('pathlib.Path.mkdir'), \
@@ -280,7 +280,7 @@ class TestAPIIncludeFiltering:
                 summary="none"
             )
 
-            result, raw_transcript = await _run_full_pipeline_script(mock_pipeline_request, output_params)
+            result, _raw_transcript = await _run_full_pipeline_script(mock_pipeline_request, output_params)
 
             # Both summary and timestamped_summary should be excluded
             assert result.summary == {}
@@ -290,7 +290,7 @@ class TestAPIIncludeFiltering:
     @pytest.mark.asyncio
     async def test_timestamped_summary_fields_filter(self, mock_pipeline_request, mock_final_obj):
         """Timestamped summary fields list should filter keys."""
-        with patch('builtins.open', create=True) as mock_open, \
+        with patch('builtins.open', create=True) as _, \
              patch('json.load', return_value=mock_final_obj), \
              patch('os.urandom', return_value=b'fake_random'), \
              patch('pathlib.Path.mkdir'), \

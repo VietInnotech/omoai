@@ -11,6 +11,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
+from omoai.logging_system.logger import get_logger, setup_logging
 from omoai.pipeline.postprocess_core_utils import (
     _dedup_overlap as _dedup_overlap,
 )
@@ -33,14 +34,12 @@ try:  # optional torch for CUDA cache clearing; not required in dry-run
 except ImportError:  # pragma: no cover - keep runnable without torch
     torch = None  # type: ignore
 
-# Environment flag for debug GPU memory clearing
-DEBUG_EMPTY_CACHE = os.environ.get("OMOAI_DEBUG_EMPTY_CACHE", "false").lower() == "true"
-
-from omoai.logging_system.logger import get_logger, setup_logging
-
 # Initialize unified logging for the script
 setup_logging()
 logger = get_logger(__name__)
+
+# Environment flag for debug GPU memory clearing
+DEBUG_EMPTY_CACHE = os.environ.get("OMOAI_DEBUG_EMPTY_CACHE", "false").lower() == "true"
 
 try:  # optional streaming JSON parser for very large ASR files
     import ijson  # type: ignore
@@ -425,7 +424,12 @@ def prepare_timestamp_context(segments: list[dict]) -> str:
     """
     def _format_timestamp(seconds: float) -> str:
         """Format seconds into [MM:SS] string for LLM prompt."""
-        assert seconds >= 0, "non-negative timestamp expected"
+        if seconds is None:
+            seconds = 0.0
+        try:
+            seconds = max(0.0, float(seconds))
+        except (TypeError, ValueError):
+            seconds = 0.0
         milliseconds = round(seconds * 1000.0)
 
         hours = milliseconds // 3_600_000
@@ -458,7 +462,7 @@ def prepare_timestamp_context(segments: list[dict]) -> str:
 
 def prepare_sentence_timestamp_lines(segments: list[dict]) -> str:
     """Create sentence-level timestamped lines from ASR segments.
-    
+
     Format: [HH:MM:SS] sentence_text
     Uses first word start if available; otherwise segment start.
     Dramatically reduces tokens vs. per-word format.
@@ -487,7 +491,7 @@ def prepare_sentence_timestamp_lines(segments: list[dict]) -> str:
 
 def pack_sentence_lines_to_budget(llm: Any, lines_text: str, max_model_len: int, out_margin: int = 128, overhead: int = 64) -> list[str]:
     """Pack sentence lines into chunks that fit token budget.
-    
+
     Returns list of chunk strings, each fitting within the input limit.
     """
     if not lines_text.strip():
@@ -509,7 +513,8 @@ def pack_sentence_lines_to_budget(llm: Any, lines_text: str, max_model_len: int,
         for ln in lines:
             try:
                 t = len(tokenizer.encode(ln))
-            except Exception:
+            except (ValueError, TypeError, AttributeError) as e:
+                logger.debug(f"Tokenization failed for line: {e}")
                 # Fallback estimation if tokenization fails
                 t = max(1, len(ln) // 3)
 
@@ -523,7 +528,8 @@ def pack_sentence_lines_to_budget(llm: Any, lines_text: str, max_model_len: int,
         if cur:
             chunks.append("\n".join(cur))
         return chunks
-    except Exception:
+    except (ValueError, TypeError, AttributeError) as e:
+        logger.debug(f"Token packing failed: {e}")
         # Fallback: split by character count
         approx_chars = max(500, int(max_model_len * 3))  # rough char-to-token ratio
         return split_text_into_chunks(lines_text, max_chars=approx_chars, overlap_sentences=0)
@@ -567,7 +573,12 @@ def parse_llm_response(response_text: str, include_raw: bool = False) -> dict:
 
     def _format_timestamp(seconds: float) -> str:
         """Format seconds into [HH:MM:SS] string for final output."""
-        assert seconds >= 0, "non-negative timestamp expected"
+        if seconds is None:
+            seconds = 0.0
+        try:
+            seconds = max(0.0, float(seconds))
+        except (TypeError, ValueError):
+            seconds = 0.0
         milliseconds = round(seconds * 1000.0)
 
         hours = milliseconds // 3_600_000
@@ -700,8 +711,11 @@ def join_punctuated_segments(
         last_end = end_sec2 if end_sec2 is not None else last_end
 
         # Emit complete sentences from buffer; keep last tail incomplete
-        assert extractor_fn is not None
-        sentences, tail = extractor_fn(buffer)
+        if extractor_fn is None:
+            # Should not happen; guard for linter and robustness
+            sentences, tail = [], buffer
+        else:
+            sentences, tail = extractor_fn(buffer)
         if sentences:
             out_sentences.extend(s for s in sentences if s.strip())
             buffer = tail
@@ -717,7 +731,8 @@ def _count_tokens(llm: Any, text: str) -> int:
     try:
         tokenizer = get_tokenizer(llm)
         return len(tokenizer.encode(text))
-    except Exception:
+    except (ValueError, TypeError, AttributeError) as e:
+        logger.debug(f"Token counting failed: {e}")
         # Fallback heuristic to avoid zeros in decision logic
         return max(1, len(text) // 3)
 
@@ -1637,7 +1652,7 @@ def main() -> None:
         os.environ.setdefault("VLLM_USE_MODELSCOPE", "False")
 
         # Import vLLM late to avoid CUDA context initialization in parent prematurely.
-        from vllm import LLM as _RealLLM  # type: ignore
+        from vllm import LLM as _real_llm  # type: ignore
         from vllm import SamplingParams as _RealSamplingParams
 
         # Bind real classes globally for subsequent calls.
@@ -1659,11 +1674,11 @@ def main() -> None:
         if q is not None:
             kwargs["quantization"] = q
         try:
-            return _RealLLM(**kwargs)  # type: ignore[arg-type, call-arg, misc]
+            return _real_llm(**kwargs)  # type: ignore[arg-type, call-arg, misc]
         except Exception as e:
             if "Quantization method specified in the model config" in str(e):
                 kwargs.pop("quantization", None)
-                return _RealLLM(**kwargs)  # type: ignore[arg-type, call-arg, misc]
+                return _real_llm(**kwargs)  # type: ignore[arg-type, call-arg, misc]
             raise
 
     asr_json_path = Path(args.asr_json)
@@ -2037,7 +2052,8 @@ def main() -> None:
                     (s.get("text") or s.get("text_raw") or "").strip()
                     for s in (segments or [])
                 ).strip()
-            except Exception:
+            except (TypeError, AttributeError) as e:
+                logger.debug(f"Failed to extract original text: {e}")
                 original_text = ""
 
         # Compute metrics only if we have something to compare
@@ -2070,7 +2086,8 @@ def main() -> None:
         else:
             quality_metrics = None
             human_diff = None
-    except Exception:
+    except (ValueError, TypeError, AttributeError) as e:
+        logger.debug(f"Quality metrics computation failed: {e}")
         # Keep pipeline robust; if metrics computation fails, omit them
         quality_metrics = None
         human_diff = None
@@ -2111,7 +2128,8 @@ def main() -> None:
                 try:
                     tokenizer_ts = get_tokenizer(llm_ts)
                     t_in = len(tokenizer_ts.encode(sentence_lines)) if sentence_lines else 0
-                except Exception:
+                except (ValueError, TypeError, AttributeError) as e:
+                    logger.debug(f"Token counting for timestamped summary failed: {e}")
                     t_in = max(1, len(sentence_lines) // 3) if sentence_lines else 0
 
                 ts_auto_ratio = float(cfg_get(["timestamped_summary", "auto_switch_ratio"], 0.98))
@@ -2173,7 +2191,7 @@ def main() -> None:
                                 all_ts.append((text_item, start_item))
 
                     # 6) Deduplicate and sort by time
-                    from difflib import SequenceMatcher as _SM
+                    from difflib import SequenceMatcher as _SequenceMatcher
                     all_ts.sort(key=lambda x: x[1])
                     merged: list[tuple[str, float]] = []
                     for text, s in all_ts:
@@ -2182,7 +2200,7 @@ def main() -> None:
                         if merged:
                             prev_text, ps = merged[-1]
                             # near-duplicate textual similarity or very close in time window
-                            sim = _SM(None, prev_text.lower(), text.lower()).ratio()
+                            sim = _SequenceMatcher(None, prev_text.lower(), text.lower()).ratio()
                             if sim >= 0.85 or abs(s - ps) <= 2.0:
                                 continue
                         merged.append((text, s))
@@ -2206,7 +2224,7 @@ def main() -> None:
                 with suppress(Exception):
                     torch.cuda.empty_cache()  # type: ignore[attr-defined]
                 gc.collect()
-            except Exception as e:
+            except (RuntimeError, ValueError, OSError) as e:
                 logger.warning(f"[post] Failed to generate timestamped summary: {e}")
 
 
@@ -2304,7 +2322,8 @@ def main() -> None:
                     wrap_width_cfg = cfg_get(["output", "wrap_width"], 100)
                 try:
                     wrap_width = int(wrap_width_cfg) if wrap_width_cfg is not None else 0
-                except Exception:
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Failed to parse wrap_width: {e}")
                     wrap_width = 0
                 if wrap_width and wrap_width > 0:
                     paragraphs = tf_text.split("\n\n") if tf_text else []
@@ -2340,7 +2359,8 @@ def main() -> None:
         # Write timed text formats if requested via formats
         try:
             fmts = set(out_formats)
-        except Exception:
+        except (TypeError, ValueError) as e:
+            logger.debug(f"Failed to parse output formats: {e}")
             fmts = set()
 
         def _fmt_time_srt(t: float) -> str:

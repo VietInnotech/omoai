@@ -73,12 +73,12 @@ def run_postprocess_script(
                     want_verbose = True
                 elif log_cfg and str(getattr(log_cfg, "level", "")).upper() == "DEBUG":
                     want_verbose = True
-            except Exception:
-                pass
+            except Exception as err:
+                logger.debug("postprocess_wrapper: unable to read logging config", exc_info=err)
             if want_verbose:
                 cmd.append("--verbose")
-        except Exception:
-            pass
+        except Exception as err:
+            logger.debug("postprocess_wrapper: unable to apply api verbosity flags", exc_info=err)
 
     # Project root: src/omoai/api/scripts/postprocess_wrapper.py -> .../src -> project root
     project_root = Path(__file__).resolve().parents[4]
@@ -99,8 +99,8 @@ def run_postprocess_script(
         default_hf_cache.mkdir(parents=True, exist_ok=True)
         env.setdefault("HF_HOME", str(default_hf_cache))
         env.setdefault("TRANSFORMERS_CACHE", str(default_hf_cache))
-    except Exception:
-        pass
+    except Exception as err:
+        logger.debug("postprocess_wrapper: unable to set default HF cache", exc_info=err)
 
     # PyTorch CUDA allocator tuning (per PyTorch docs) to reduce fragmentation and
     # speed up pinned memory operations during per-request launches

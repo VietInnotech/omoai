@@ -146,7 +146,8 @@ class Segment:
         return self.end - self.start
 
 def exact_div(x, y):
-    assert x % y == 0
+    if x % y != 0:
+        raise ValueError(f"exact_div: {x} is not divisible by {y}")
     return x // y
 
 def interpolate_nans(x, method='nearest'):
@@ -158,15 +159,15 @@ def interpolate_nans(x, method='nearest'):
 def load_audio(file: str, sr: int = SAMPLE_RATE) -> np.ndarray:
     """
     Open an audio file and read as mono waveform, resampling as necessary
-    
+
     Parameters
     ----------
     file: str
         The audio file to open
-    
+
     sr: int
         The sample rate to resample the audio if necessary
-    
+
     Returns
     -------
     A NumPy array containing the audio waveform, in float32 dtype.
@@ -198,31 +199,19 @@ def load_audio(file: str, sr: int = SAMPLE_RATE) -> np.ndarray:
 def load_align_model(language_code: str, device: str, model_name: str | None = None, model_dir=None):
     """
     Load alignment model for specified language
-    
+
     Args:
         language_code: Language code (e.g., 'en', 'fr', 'vi')
         device: Device to load model on ('cpu', 'cuda', etc.)
         model_name: Optional specific model name
         model_dir: Optional model directory (defaults to /home/cetech/omoai/models)
-        
+
     Returns:
         tuple: (model, metadata)
     """
     # Set default model directory if not provided
     if model_dir is None:
         model_dir = "/home/cetech/omoai/models"
-    """
-    Load alignment model for specified language
-    
-    Args:
-        language_code: Language code (e.g., 'en', 'fr')
-        device: Device to load model on ('cpu', 'cuda', etc.)
-        model_name: Optional specific model name
-        model_dir: Optional model directory
-        
-    Returns:
-        tuple: (model, metadata)
-    """
     if model_name is None:
         if language_code in DEFAULT_ALIGN_MODELS_TORCH:
             model_name = DEFAULT_ALIGN_MODELS_TORCH[language_code]
@@ -242,7 +231,7 @@ def load_align_model(language_code: str, device: str, model_name: str | None = N
             processor = Wav2Vec2Processor.from_pretrained(model_name, cache_dir=model_dir)
             align_model = Wav2Vec2ForCTC.from_pretrained(model_name, cache_dir=model_dir)
         except Exception as e:
-            raise ValueError(f'Failed to load model "{model_name}" from huggingface: {e}')
+            raise ValueError(f'Failed to load model "{model_name}" from huggingface: {e}') from e
         pipeline_type = "huggingface"
         align_model = align_model.to(device)
         labels = processor.tokenizer.get_vocab()
@@ -254,12 +243,12 @@ def load_align_model(language_code: str, device: str, model_name: str | None = N
 def get_trellis(emission, tokens, blank_id=0):
     """
     Build trellis for Viterbi alignment
-    
+
     Args:
         emission: Emission probabilities (T, V)
         tokens: Token sequence
         blank_id: Blank token ID
-        
+
     Returns:
         trellis: Trellis matrix (T, N)
     """
@@ -279,7 +268,8 @@ def get_trellis(emission, tokens, blank_id=0):
 
 def get_wildcard_emission(frame_emission, tokens, blank_id):
     """Processing token emission scores containing wildcards (vectorized version)"""
-    assert 0 <= blank_id < len(frame_emission)
+    if not (0 <= blank_id < len(frame_emission)):
+        raise ValueError(f"blank_id {blank_id} out of range [0, {len(frame_emission)})")
 
     tokens = torch.tensor(tokens) if not isinstance(tokens, torch.Tensor) else tokens
     wildcard_mask = (tokens == -1)
@@ -296,13 +286,13 @@ def get_wildcard_emission(frame_emission, tokens, blank_id):
 def backtrack(trellis, emission, tokens, blank_id=0):
     """
     Standard CTC backtracking
-    
+
     Args:
         trellis: Trellis matrix
         emission: Emission probabilities
         tokens: Token sequence
         blank_id: Blank token ID
-        
+
     Returns:
         path: List of Point objects
     """
@@ -310,7 +300,8 @@ def backtrack(trellis, emission, tokens, blank_id=0):
 
     path = [Point(j, t, emission[t, blank_id].exp().item())]
     while j > 0:
-        assert t > 0
+        if t <= 0:
+            raise ValueError(f"Invalid time index t={t}, must be > 0")
 
         p_stay = emission[t - 1, blank_id]
         p_change = get_wildcard_emission(emission[t - 1], [tokens[j]], blank_id)[0]
@@ -335,24 +326,24 @@ def backtrack(trellis, emission, tokens, blank_id=0):
 def backtrack_beam(trellis, emission, tokens, blank_id=0, beam_width=5):
     """
     Beam search CTC backtracking
-    
+
     Args:
         trellis: Trellis matrix
         emission: Emission probabilities
         tokens: Token sequence
         blank_id: Blank token ID
         beam_width: Beam search width
-        
+
     Returns:
         path: List of Point objects or None if failed
     """
-    T, J = trellis.size(0) - 1, trellis.size(1) - 1
+    t_max, j_max = trellis.size(0) - 1, trellis.size(1) - 1
 
     init_state = BeamState(
-        token_index=J,
-        time_index=T,
-        score=trellis[T, J],
-        path=[Point(J, T, emission[T, blank_id].exp().item())]
+        token_index=j_max,
+        time_index=t_max,
+        score=trellis[t_max, j_max],
+        path=[Point(j_max, t_max, emission[t_max, blank_id].exp().item())]
     )
 
     beams = [init_state]
@@ -464,7 +455,7 @@ def align(
 ) -> AlignedTranscriptionResult:
     """
     Align phoneme recognition predictions to known transcription.
-    
+
     Args:
         transcript: List of transcript segments
         model: Alignment model
@@ -475,7 +466,7 @@ def align(
         return_char_alignments: Whether to return character alignments
         print_progress: Whether to print progress
         combined_progress: Whether to use combined progress reporting
-        
+
     Returns:
         AlignedTranscriptionResult with aligned segments and word segments
     """
@@ -486,7 +477,7 @@ def align(
     if len(audio.shape) == 1:
         audio = audio.unsqueeze(0)
 
-    MAX_DURATION = audio.shape[1] / SAMPLE_RATE
+    # max_duration = audio.shape[1] / SAMPLE_RATE  # Unused variable
 
     model_dictionary = align_model_metadata["dictionary"]
     model_lang = align_model_metadata["language"]
@@ -575,7 +566,7 @@ def align(
             aligned_segments.append(aligned_seg)
             continue
 
-        if t1 >= MAX_DURATION:
+        if t1 >= audio.shape[1] / SAMPLE_RATE:
             print(f'Failed to align segment ("{segment["text"]}"): original start time longer than audio duration, skipping...')
             aligned_segments.append(aligned_seg)
             continue

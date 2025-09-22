@@ -166,8 +166,8 @@ class MainController(Controller):
                         and getattr(sum_cfg, "language", None)
                     ):
                         output_params.summary_lang = str(sum_cfg.language)  # type: ignore[assignment]
-        except Exception:
-            pass
+        except (AttributeError, TypeError) as e:
+            logger.debug(f"Failed to set summary language: {e}")
 
         # Debug logging to validate query parameter parsing
         logger.info(
@@ -226,7 +226,8 @@ class MainController(Controller):
         api_cfg = None
         try:
             api_cfg = getattr(get_config(), "api", None)
-        except Exception:
+        except (AttributeError, ImportError) as e:
+            logger.debug(f"Failed to get API config: {e}")
             api_cfg = None
 
         # Prefer JSON if client indicates application/json, */*, or no Accept header

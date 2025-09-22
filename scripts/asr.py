@@ -311,7 +311,8 @@ def run_asr(
                 )
             else:
                 use_vad = False
-    except Exception:
+    except (ImportError, AttributeError, ValueError) as e:
+        logger.debug(f"VAD setup failed: {e}")
         use_vad = False
         windows = []
 
@@ -328,8 +329,8 @@ def run_asr(
                 f"[VAD] enabled method={getattr(cfg.vad, 'method', 'unknown')} windows={len(windows)} "
                 f"speech_ratio={ratio:.3f}"
             )
-        except Exception:
-            pass
+        except (ValueError, TypeError) as e:
+            logger.debug(f"VAD ratio calculation failed: {e}")
         for w in windows:
             ws = float(w.get("start", 0.0) or 0.0)
             we = float(w.get("end", ws) or ws)
@@ -395,8 +396,8 @@ def run_asr(
                     / max(1e-6, float(audio_duration_s))
                 ),
             }
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        logger.debug(f"VAD metadata calculation failed: {e}")
 
     # Alignment processing
     alignment_device = None
@@ -476,7 +477,7 @@ def run_asr(
 
                 logger.info(f"Alignment completed: {len(enriched_segments)} segments, {len(word_segments)} words")
 
-    except Exception as e:
+    except (ImportError, RuntimeError, ValueError, OSError) as e:
         logger.warning(f"Alignment failed: {e}", exc_info=True)
         # Add failure metadata
         output.setdefault("metadata", {}).setdefault("alignment", {})

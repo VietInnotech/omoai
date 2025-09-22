@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
+
 """
 Lightweight VAD utilities for optional pre-segmentation.
 
@@ -9,11 +14,6 @@ Current implementation:
 
 All functions are best-effort and must never raise; callers can fall back to full-audio decode.
 """
-
-from collections.abc import Iterable
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Literal
 
 VADMethod = Literal["webrtc", "silero", "pyannote"]
 
@@ -70,7 +70,7 @@ def detect_speech(
         if method == "webrtc":
             try:
                 import webrtcvad  # type: ignore
-            except Exception:
+            except ImportError:
                 return []
 
             raw, sr = _read_pcm16_mono_wav(audio_path)
@@ -86,7 +86,7 @@ def detect_speech(
 
             try:
                 vad = webrtcvad.Vad(int(webrtc_mode))
-            except Exception:
+            except (ValueError, TypeError):
                 vad = webrtcvad.Vad(2)
             frames = [raw[i : i + frame_bytes] for i in range(0, len(raw), frame_bytes)]
             # Drop last partial frame
@@ -134,7 +134,7 @@ def detect_speech(
         if method == "silero":
             try:
                 import torch  # type: ignore
-            except Exception:
+            except ImportError:
                 return []
 
             # Prefer PyPI package API if available
@@ -159,7 +159,7 @@ def detect_speech(
                     speech_pad_ms=int(max(0, int(speech_pad_ms))),
                     window_size_samples=int(max(128, int(window_size_samples))),
                 )
-            except Exception:
+            except (ImportError, RuntimeError):
                 # Fallback to torch.hub loader (same repo)
                 try:
                     vad_model, vad_utils = torch.hub.load(
@@ -192,7 +192,7 @@ def detect_speech(
                         max_speech_duration_s=float(max(1.0, float(chunk_size))),
                         speech_pad_ms=int(max(0, int(speech_pad_ms))),
                     )
-                except Exception:
+                except (ImportError, RuntimeError):
                     ts = None
 
             out: list[tuple[float, float]] = []
@@ -200,7 +200,7 @@ def detect_speech(
                 try:
                     s = float(t.get("start", 0)) / float(sample_rate)
                     e = float(t.get("end", 0)) / float(sample_rate)
-                except Exception:
+                except (ValueError, TypeError, KeyError):
                     continue
                 if e > s:
                     out.append((s, e))
@@ -224,7 +224,7 @@ def detect_speech(
 
         # pyannote not implemented here to avoid heavy dependencies
         return []
-    except Exception:
+    except (OSError, ValueError, TypeError):
         return []
 
 

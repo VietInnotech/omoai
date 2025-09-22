@@ -97,7 +97,7 @@ def _normalize_summary(raw_summary: Any) -> dict:
 
             out: list[str] = []
             for line in bullets.splitlines():
-                m = _re.match(r"^\s*(?:[-*•‣–—]|\d+[\.)])\s+(.+)", line)
+                m = _re.match(r"^\s*(?:[-*•‣\u2013\u2014]|\d+[\.)])\s+(.+)", line)
                 if m:
                     out.append(m.group(1).strip())
                 else:
@@ -695,7 +695,8 @@ async def _run_full_pipeline_script(
                         start = float(seg.get("start", 0.0) or 0.0)
                         end = float(seg.get("end", start) or start)
                         text = str(seg.get("text_punct") or seg.get("text") or "").strip()
-                    except Exception:
+                    except (ValueError, TypeError, KeyError) as e:
+                        logger.debug(f"Failed to process segment for SRT: {e}")
                         continue
                     if not text:
                         continue
@@ -713,7 +714,8 @@ async def _run_full_pipeline_script(
                         start = float(seg.get("start", 0.0) or 0.0)
                         end = float(seg.get("end", start) or start)
                         text = str(seg.get("text_punct") or seg.get("text") or "").strip()
-                    except Exception:
+                    except (ValueError, TypeError, KeyError) as e:
+                        logger.debug(f"Failed to process segment for VTT: {e}")
                         continue
                     if not text:
                         continue
