@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 
 from litestar.datastructures import UploadFile
 from pydantic import BaseModel, ConfigDict
@@ -31,7 +31,7 @@ class OutputFormatParams(BaseModel):
     formats: list[Literal["json", "text", "srt", "vtt", "md"]] | None = None
 
     # Transcript options
-    include: list[Literal["transcript_raw", "transcript_punct", "segments"]] | None = (
+    include: list[Literal["transcript_raw", "transcript_punct", "segments", "timestamped_summary", "summary"]] | None = (
         None
     )
     ts: Literal["none", "s", "ms", "clock"] | None = None
@@ -40,12 +40,18 @@ class OutputFormatParams(BaseModel):
     summary: Literal["bullets", "abstract", "both", "none"] | None = None
     summary_bullets_max: int | None = None
     summary_lang: str | None = None
+    summary_fields: list[Literal["title", "abstract", "bullets", "raw"]] | None = None
+    timestamped_summary_fields: list[Literal["summary_text", "timestamps", "raw"]] | None = None
 
     # Quality metrics and diff options
     include_quality_metrics: bool | None = None
     include_diffs: bool | None = None
     # Simple raw summary option
     return_summary_raw: bool | None = None
+    # Option to include raw LLM response for timestamped summary
+    return_timestamped_summary_raw: bool | None = None
+    # Include VAD metadata (if available) in the saved or returned JSON
+    include_vad: bool | None = None
 
 
 # Response Models
@@ -85,7 +91,11 @@ class PipelineResponse(BaseModel):
     quality_metrics: QualityMetrics | None = None
     diffs: HumanReadableDiff | None = None
     # Optional raw LLM summary text (unparsed), included only on request
-    summary_raw_text: str | None = None
+    # Optional metadata (e.g., VAD) included only when requested
+    # Optional timestamped summary with [HH:MM:SS] formatted timestamps
+    # Can include an optional "raw" field with the unparsed LLM response
+    timestamped_summary: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class PreprocessResponse(BaseModel):
@@ -103,5 +113,3 @@ class PostprocessResponse(BaseModel):
     segments: list  # Include segments with punctuated text
     quality_metrics: QualityMetrics | None = None
     diffs: HumanReadableDiff | None = None
-    # Optional raw LLM summary text (unparsed)
-    summary_raw_text: str | None = None

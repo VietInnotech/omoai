@@ -8,8 +8,9 @@ outputs for testing transcription accuracy and system performance.
 from dataclasses import dataclass
 from pathlib import Path
 
-import torch
 import pytest
+import torch
+
 torchaudio = pytest.importorskip("torchaudio")
 
 try:

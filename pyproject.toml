@@ -25,6 +25,14 @@ dependencies = [
     "tqdm>=4.67.1",
     "nvidia-ml-py>=13.580.82",
     "psutil>=7.0.0",
+    "silero-vad>=6.0.0",
+    "webrtcvad>=2.0.10",
+    "underthesea>=6.8.4",
+    "transformers>=4.43",
+    "nltk>=3.8",
+    "vllm>=0.10.1.1",
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
 ]
 
 

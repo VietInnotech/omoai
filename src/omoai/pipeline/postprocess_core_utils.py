@@ -326,8 +326,8 @@ def _parse_vietnamese_labeled_text(text: str) -> dict[str, Any] | None:
                 )
                 continue
         else:
-            # Accept common bullet markers: -, *, •, ‣, –, —, or enumerated 1. / 1)
-            bullet_m = re.match(r"^\s*(?:[-*•‣–—]|\d+[\.)])\s+(.+)", line_nfc)
+            # Accept common bullet markers: -, *, •, ‣, \u2013, \u2014, or enumerated 1. / 1)
+            bullet_m = re.match(r"^\s*(?:[-*•‣\u2013\u2014]|\d+[\.)])\s+(.+)", line_nfc)
             if bullet_m:
                 bullet = bullet_m.group(1).strip()
                 if bullet:

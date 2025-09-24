@@ -224,28 +224,68 @@ def get_level_name(config: LoggingConfig) -> str:
 
 
 def get_logging_config() -> LoggingConfig:
-    """Get logging configuration with environment overrides."""
-    # Start with environment-based config
-    config = LoggingConfig.from_environment()
+    """Get logging configuration with clear precedence.
 
-    # Try to get additional settings from main config
+    Precedence (highest last):
+    1) config.yaml logging (and nested env OMOAI_LOGGING__*)
+    2) legacy env OMOAI_LOG_* (overrides YAML only)
+    3) nested env OMOAI_LOGGING__* (wins over both)
+    """
+    import os
+
+    # Base from main config (includes YAML and nested env OMOAI_LOGGING__*)
+    base = LoggingConfig()
     try:
         main_config = get_config()
-        if hasattr(main_config, "logging"):
-            # If logging config exists in main config, merge it
+        if hasattr(main_config, "logging") and main_config.logging is not None:
             logging_dict = (
                 main_config.logging.model_dump()
                 if hasattr(main_config.logging, "model_dump")
                 else main_config.logging.__dict__
             )
             for key, value in logging_dict.items():
-                if hasattr(config, key) and value is not None:
-                    setattr(config, key, value)
+                if hasattr(base, key) and value is not None:
+                    setattr(base, key, value)
     except Exception:
-        # If main config unavailable, use environment-only config
+        # If main config unavailable, keep defaults
         pass
 
-    return config
+    # Legacy env overlay (OMOAI_LOG_*) built from environment
+    env_direct = LoggingConfig.from_environment()
+
+    # Mapping of fields to direct and nested env var names
+    direct_map = {
+        "level": "OMOAI_LOG_LEVEL",
+        "format_type": "OMOAI_LOG_FORMAT",
+        "enable_console": "OMOAI_LOG_CONSOLE",
+        "enable_file": "OMOAI_LOG_FILE_ENABLED",
+        "log_file": "OMOAI_LOG_FILE",
+        "enable_text_file": "OMOAI_LOG_TEXT_FILE_ENABLED",
+        "text_log_file": "OMOAI_LOG_TEXT_FILE",
+        "rotation": "OMOAI_LOG_ROTATION",
+        "retention": "OMOAI_LOG_RETENTION",
+        "compression": "OMOAI_LOG_COMPRESSION",
+        "enqueue": "OMOAI_LOG_ENQUEUE",
+        "enable_performance_logging": "OMOAI_LOG_PERFORMANCE",
+        "performance_threshold_ms": "OMOAI_LOG_PERF_THRESHOLD",
+        "enable_request_tracing": "OMOAI_LOG_TRACING",
+        "trace_headers": "OMOAI_LOG_TRACE_HEADERS",
+        "enable_error_tracking": "OMOAI_LOG_ERRORS",
+        "include_stacktrace": "OMOAI_LOG_STACKTRACE",
+        "enable_metrics": "OMOAI_LOG_METRICS",
+        "metrics_interval": "OMOAI_LOG_METRICS_INTERVAL",
+        "debug_mode": "OMOAI_DEBUG",
+        "quiet_mode": "OMOAI_QUIET",
+    }
+
+    # Apply legacy env values only if set AND no nested env present for same field
+    for field, env_key in direct_map.items():
+        if env_key in os.environ:
+            nested_key = f"OMOAI_LOGGING__{field.upper()}"
+            if nested_key not in os.environ:
+                setattr(base, field, getattr(env_direct, field))
+
+    return base
 
 
 class InterceptHandler(logging.Handler):

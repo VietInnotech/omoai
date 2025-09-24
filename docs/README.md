@@ -4,9 +4,12 @@ This directory contains project documentation for OmoAI.
 
 ## Table of Contents
 
-- [Configuration](configuration.md): Configuration management.
-- [API Reference](reference.md): API endpoints and models.
-- [Loguru Migration](loguru-migration.md): Centralized logging system.
-- [CUDA Multiprocessing Fix](CUDA_MULTIPROCESSING_FIX.md): Notes on CUDA/vLLM spawn.
+- [Architecture](ARCHITECTURE.md): The high-level architecture of the OmoAI system.
+- [Requirements](REQUIREMENTS.md): The functional and non-functional requirements of the system.
+- [Component: API](COMPONENT_API_DOCS.md): Detailed documentation of the API component.
+- [Component: ASR](COMPONENT_ASR_DOCS.md): Detailed documentation of the ASR component.
+- [Component: Alignment](COMPONENT_ALIGNMENT_DOCS.md): Detailed documentation of the Alignment component.
+- [Component: Post-processing](COMPONENT_POSTPROCESSING_DOCS.md): Detailed documentation of the Post-processing component.
+- [Component: Configuration](COMPONENT_CONFIGURATION_DOCS.md): Detailed documentation of the Configuration component.
+- [Component: Logging](COMPONENT_LOGGING_DOCS.md): Detailed documentation of the Logging component.
 - [Gap Analysis](GAP_ANALYSIS.md): Requirements and gaps.
-- [Debug Plan](debug_plan.md): Investigation notes and guidance.

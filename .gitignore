@@ -14,10 +14,17 @@ tmp/
 .pytest_cache/
 
 # Data and models
+# Keep raw inputs tracked; ignore generated outputs and large artifacts
 chunkformer-large-vie/
-data/*
 models/
+# track source data/input but ignore everything else under data (generated outputs)
+data/
+!data/input/
+!data/input/*
+
+# Logs and run artifacts
 *.log
+logs/
 *.dryrun.json
 sample_asr.json
 
@@ -29,3 +36,30 @@ logs/*.jsonl
 
 # OS-specific
 .DS_Store
+
+# Editor and IDE
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# Python envs and packaging
+env/
+venv/
+.env
+.venv/
+pip-wheel-metadata/
+
+# Caches
+.mypy_cache/
+.pytest_cache/
+__pycache__/
+.ruff_cache/
+
+# Temporary files
+*.tmp
+*.swp
+*~
+
+#ref
+ref/

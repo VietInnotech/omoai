@@ -41,10 +41,9 @@ async def test_pipeline_text_plain_return_raw(monkeypatch):
     async def fake_run_full_pipeline(data, params):
         # service would normally include raw only when requested; directly include here for controller test
         return PipelineResponse(
-            summary={"title": "T", "summary": "A", "bullets": []},
+            summary={"title": "T", "summary": "A", "bullets": [], "raw": "Title: Raw\nSummary: Raw text"},
             segments=[],
             transcript_punct=None,
-            summary_raw_text="Title: Raw\nSummary: Raw text",
         )
 
     import omoai.api.main_controller as mc

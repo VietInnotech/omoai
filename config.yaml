@@ -20,11 +20,11 @@ paths:
 llm: &base_llm
   model_id: cpatonn/Qwen3-4B-Instruct-2507-AWQ-4bit
   quantization: auto
-  max_model_len: 12000
-  gpu_memory_utilization: 0.70
-  max_num_seqs: 1
-  max_num_batched_tokens: 512
-  trust_remote_code: true
+  max_model_len: 50000
+  gpu_memory_utilization: 0.95
+  max_num_seqs: 2
+  max_num_batched_tokens: 8192
+  trust_remote_code: false
 
 asr:
   total_batch_duration_s: 3600 # 1 hour max (increased)
@@ -81,9 +81,9 @@ punctuation:
 summarization:
   llm:
     <<: *base_llm
-  map_reduce: false
+  map_reduce: true
   auto_switch_ratio: 0.98
-  auto_margin_tokens: 256
+  auto_margin_tokens: 96
   system_prompt: |
     <instruction>
     Bạn là một chuyên gia phân tích nội dung. Nhiệm vụ của bạn là tạo một bản tóm tắt có cấu trúc, súc tích từ văn bản tiếng Việt được cung cấp.
@@ -142,6 +142,47 @@ summarization:
   user_prompt: "<input>{{TEXT_TO_SUMMARIZE}}</input>"
   sampling:
     temperature: 0.7
+
+timestamped_summary:
+  llm:
+    <<: *base_llm
+  map_reduce: true
+  auto_switch_ratio: 0.98
+  auto_margin_tokens: 96
+  return_raw: true
+  system_prompt: |
+    <instruction>
+    Bạn là một trợ lý AI chuyên tạo danh sách các chủ đề chính từ một bản ghi có dấu thời gian. Người dùng sẽ cung cấp một bản ghi trong đó mỗi từ được đánh số và có dấu thời gian theo định dạng `[MM:SS] word`.
+
+    Nhiệm vụ của bạn là xác định các chủ đề chính trong bản ghi và tạo một danh sách các chủ đề đó, mỗi chủ đề có dấu thời gian bắt đầu. Định dạng đầu ra phải là một danh sách, trong đó mỗi dòng chứa dấu thời gian bắt đầu của chủ đề, theo sau là một khoảng trắng và sau đó là tên chủ đề.
+
+    Định dạng đầu ra BẮT BUỘC là:
+    `[HH:MM:SS] [Tên chủ đề]`
+    </instruction>
+    <example>
+    <input>
+    1. [00:05] hôm 2. [00:08] nay 3. [00:10] chúng 4. [00:12] ta 5. [00:18] sẽ 6. [00:20] thảo 7. [00:21] luận 8. [00:28] về 9. [00:30] trí 10. [00:35] tuệ 11. [00:40] nhân 12. [00:42] tạo 13. [00:46] và 14. [00:50] học 15. [00:52] máy
+    </input>
+    <output>
+    [00:00:30] Trí tuệ nhân tạo
+    [00:00:50] Học máy
+    </output>
+    </example>
+    <example>
+    <input>
+    1. [00:01] chào 2. [00:02] mừng 3. [00:03] đến 4. [00:04] với 5. [00:05] podcast 6. [00:06] của 7. [00:07] chúng 8. [00:08] tôi 9. [00:09] hôm 10. [00:10] nay 11. [00:11] chúng 12. [00:12] ta 13. [00:13] sẽ 14. [00:14] nói 15. [00:15] về 16. [00:16] blockchain 17. [00:17] và 18. [00:18] tiền 19. [00:19] điện 20. [00:20] tử
+    </input>
+    <output>
+    [00:00:16] Blockchain và tiền điện tử
+    </output>
+    </example>
+    # <policy>
+    # QUY TẮC TUYỆT ĐỐI: Giữ nguyên định dạng đầu ra `[HH:MM:SS] [Tên chủ đề]`.
+    # QUY TẮC TUYỆT ĐỐI: KHÔNG thêm thông tin không có trong văn bản gốc.
+    # </policy>
+  user_prompt: "<input>{{TEXT_TO_SUMMARIZE}}</input>"
+  sampling:
+    temperature: 0.2
 
 output:
   # Legacy fields (maintained for backward compatibility)
@@ -207,6 +248,7 @@ output:
   # Mirrors OutputFormatParams and lets you choose defaults for API responses
   # include: choose which fields to include by default. Valid values:
   #   - transcript_raw (sensitive; prefer excluding unless needed)
+  #   - timestamped_summary
   #   - transcript_punct
   #   - segments
   # summary: bullets | abstract | both | none
@@ -215,16 +257,18 @@ output:
   # include_diffs: include human-readable diffs if available
   # return_summary_raw: include raw LLM summary text if available
   api_defaults:
-    include: ["transcript_punct"]  # e.g., omit segments by default
-    summary: "both"                 # bullets | abstract | both | none
+    include: ["summary", "transcript_punct", "timestamped_summary"] # include segments by default
+    summary: "both" # bullets | abstract | both | none
     summary_bullets_max: 7
     summary_lang: "vi"
     include_quality_metrics: true
     include_diffs: false
     return_summary_raw: true
+    # summary_fields: ["title", "abstract", "bullets", "raw"]
+    # timestamped_summary_fields: ["summary_text", "timestamps", "raw"]
 
 api:
-  host: "0.0.0.0"  # Use 127.0.0.1 for local-only dev
+  host: "0.0.0.0" # Use 127.0.0.1 for local-only dev
   port: 8000
   max_body_size_mb: 200 # Increased for longer audio files
   request_timeout_seconds: 1800 # 30 minutes to match ASR batch duration
@@ -248,7 +292,7 @@ api:
 
 logging:
   level: INFO
-  format_type: structured  # structured | json | simple
+  format_type: structured # structured | json | simple
   enable_console: true
   enable_file: true
   log_file: "@logs/api_server.jsonl"
@@ -264,3 +308,40 @@ logging:
   enqueue: true
   debug_mode: true
   quiet_mode: false
+
+alignment:
+  enabled: true
+  language: vi
+  device: auto
+  return_char_alignments: false
+  interpolate_method: nearest
+  print_progress: true
+
+vad:
+  enabled: true
+  method: silero # silero | webrtc | pyannote
+  chunk_size: 30 # seconds, max speech window length (WhisperX default)
+  overlap_s: 0.4 # seconds, window overlap to protect context
+  vad_onset: 0.50 # WhisperX default
+  vad_offset: 0.363 # WhisperX default
+  min_speech_s: 0.30 # remove very short segments (s)
+  min_silence_s: 0.30 # fill small gaps (s)
+  device: auto # for torch-based methods
+  hf_token_env: HUGGINGFACE_TOKEN
+  webrtc:
+    mode: 2 # 0..3 (2 balanced per common practice)
+    frame_ms: 20 # 10/20/30 ms frames
+    start_hangover_frames: 3
+    end_hangover_frames: 5
+  silero:
+    threshold: 0.50
+    min_speech_duration_ms: 250
+    min_silence_duration_ms: 100
+    max_speech_duration_s: 30
+    speech_pad_ms: 30
+    window_size_samples: 512
+  pyannote:
+    min_duration_on: 0.1
+    min_duration_off: 0.1
+    pad_onset: 0.0
+    pad_offset: 0.0

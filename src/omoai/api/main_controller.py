@@ -8,8 +8,8 @@ from litestar.response import Redirect, Response
 from starlette.requests import Request
 
 from omoai.api.models import OutputFormatParams, PipelineRequest, PipelineResponse
-from omoai.config.schemas import get_config
 from omoai.api.services import run_full_pipeline
+from omoai.config.schemas import get_config
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -39,19 +39,21 @@ class MainController(Controller):
         ],
         # Query parameters for output formatting
         formats: list[Literal["json", "text", "srt", "vtt", "md"]] | None = None,
-        include: list[Literal["transcript_raw", "transcript_punct", "segments"]]
+        include: list[Literal["transcript_raw", "transcript_punct", "segments", "timestamped_summary", "summary"]]
         | None = None,
         ts: Literal["none", "s", "ms", "clock"] | None = None,
         summary: Literal["bullets", "abstract", "both", "none"] | None = None,
         summary_bullets_max: int | None = None,
         summary_lang: str | None = None,
         return_summary_raw: bool | None = None,
+        return_timestamped_summary_raw: bool | None = None,
+        include_vad: bool | None = None,
         # Quality metrics and diff options
         include_quality_metrics: bool | None = None,
         include_diffs: bool | None = None,
         # Async processing option
         async_: bool | None = None,
-    ) -> PipelineResponse | Response[str]:
+    ) -> PipelineResponse | Response[str] | Response[dict[str, str]]:
         """
         Endpoint to run the entire audio processing pipeline.
 
@@ -68,7 +70,7 @@ class MainController(Controller):
 
         Query Parameters (optional):
         - formats: List of output formats (json, text, srt, vtt, md)
-        - include: What to include (transcript_raw, transcript_punct, segments)
+        - include: What to include (transcript_raw, transcript_punct, segments, timestamped_summary)
         - ts: Timestamp format (none, s, ms, clock)
         - summary: Summary type (both=default, bullets, abstract, none)
         - summary_bullets_max: Maximum number of bullet points
@@ -91,6 +93,8 @@ class MainController(Controller):
             include_quality_metrics=include_quality_metrics,
             include_diffs=include_diffs,
             return_summary_raw=return_summary_raw,
+            return_timestamped_summary_raw=return_timestamped_summary_raw,
+            include_vad=include_vad,
         )
 
         # Apply defaults from configuration when not provided via query
@@ -104,9 +108,9 @@ class MainController(Controller):
                 if api_def:
                     # Set defaults only when not provided via query
                     if output_params.formats is None and getattr(api_def, "formats", None) is not None:
-                        output_params.formats = list(getattr(api_def, "formats"))  # type: ignore[assignment]
+                        output_params.formats = list(api_def.formats)  # type: ignore[assignment]
                     if output_params.include is None and getattr(api_def, "include", None) is not None:
-                        output_params.include = list(getattr(api_def, "include"))  # type: ignore[assignment]
+                        output_params.include = list(api_def.include)  # type: ignore[assignment]
                     if output_params.ts is None and getattr(api_def, "ts", None) is not None:
                         output_params.ts = api_def.ts  # type: ignore[assignment]
                     if output_params.summary is None and getattr(api_def, "summary", None) is not None:
@@ -133,6 +137,21 @@ class MainController(Controller):
                         and getattr(api_def, "return_summary_raw", None) is not None
                     ):
                         output_params.return_summary_raw = bool(api_def.return_summary_raw)  # type: ignore[assignment]
+                    if (
+                        output_params.include_vad is None
+                        and getattr(api_def, "include_vad", None) is not None
+                    ):
+                        output_params.include_vad = bool(api_def.include_vad)  # type: ignore[assignment]
+                    if (
+                        output_params.summary_fields is None
+                        and getattr(api_def, "summary_fields", None) is not None
+                    ):
+                        output_params.summary_fields = list(api_def.summary_fields)  # type: ignore[assignment]
+                    if (
+                        output_params.timestamped_summary_fields is None
+                        and getattr(api_def, "timestamped_summary_fields", None) is not None
+                    ):
+                        output_params.timestamped_summary_fields = list(api_def.timestamped_summary_fields)  # type: ignore[assignment]
                 # Additionally, support legacy summary defaults from output.summary
                 if sum_cfg:
                     if output_params.summary is None and getattr(sum_cfg, "mode", None):
@@ -147,8 +166,8 @@ class MainController(Controller):
                         and getattr(sum_cfg, "language", None)
                     ):
                         output_params.summary_lang = str(sum_cfg.language)  # type: ignore[assignment]
-        except Exception:
-            pass
+        except (AttributeError, TypeError) as e:
+            logger.debug(f"Failed to set summary language: {e}")
 
         # Debug logging to validate query parameter parsing
         logger.info(
@@ -170,8 +189,8 @@ class MainController(Controller):
         params = output_params if output_params else None
         if async_:
             # Enqueue background job using in-memory manager
-            from omoai.api.jobs import job_manager
             from omoai.api import services as _svc
+            from omoai.api.jobs import job_manager
 
             # Read upload now to decouple from request lifecycle
             file_bytes = await data.audio_file.read()
@@ -207,7 +226,8 @@ class MainController(Controller):
         api_cfg = None
         try:
             api_cfg = getattr(get_config(), "api", None)
-        except Exception:
+        except (AttributeError, ImportError) as e:
+            logger.debug(f"Failed to get API config: {e}")
             api_cfg = None
 
         # Prefer JSON if client indicates application/json, */*, or no Accept header
@@ -233,15 +253,16 @@ class MainController(Controller):
                 wants_text = True
 
         if wants_text:
+            summary_data = getattr(result, "summary", {}) or {}
             # If raw summary requested and available, return only the raw LLM output
-            if return_summary_raw and getattr(result, "summary_raw_text", None):
-                raw_text = result.summary_raw_text or ""
-                return Response(raw_text, media_type="text/plain; charset=utf-8")
+            if return_summary_raw:
+                raw_text = str(summary_data.get("raw", "") or "").strip()
+                if raw_text:
+                    return Response(raw_text, media_type="text/plain; charset=utf-8")
             # Otherwise compose plain text with transcript and structured summary (title, abstract, bullets)
             parts: list[str] = []
             if result.transcript_punct:
                 parts.append(result.transcript_punct)
-            summary_data = getattr(result, "summary", {}) or {}
             title = summary_data.get("title", "")
             abstract_text = summary_data.get("summary", "") or summary_data.get(
                 "abstract", ""

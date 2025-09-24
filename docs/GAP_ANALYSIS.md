@@ -2,6 +2,53 @@
 
 ## Current Issues
 
+### BUG-002: API Include Filtering for Summary and Timestamped Summary [RESOLVED]
+
+**Status**: ✅ Fixed
+**Date**: 2025-09-16
+**Component**: API Response Filtering
+**Severity**: Medium
+
+**Description**:
+The `summary` field was being included in API responses even when not explicitly listed in the `output.api_defaults.include` setting from `config.yaml`. The filtering logic only applied to `segments` and `transcript_punct` fields, ignoring both `summary` and `timestamped_summary`.
+
+**Root Cause**:
+The filtering logic in [`src/omoai/api/services.py`](src/omoai/api/services.py:783-789) was incomplete - it only checked for `segments` and `transcript_punct` in the include list, but did not filter `summary` or `timestamped_summary` fields.
+
+**Impact**:
+
+- API responses always included summary data regardless of configuration
+- Users could not exclude summary fields to reduce response size
+- Configuration settings were not being respected for summary-related fields
+
+**Fix Applied**:
+
+1. **Enhanced Filtering Logic**: Added checks for `summary` and `timestamped_summary` in the include filtering logic
+2. **Updated Model Definitions**: Added `"summary"` as a valid literal in [`OutputFormatParams`](src/omoai/api/models.py:34) and [`MainController.pipeline`](src/omoai/api/main_controller.py:42)
+3. **Fixed Model Consistency**: Removed incorrect `timestamped_summary` parameter from [`PostprocessResponse`](src/omoai/api/services.py:345)
+4. **Comprehensive Testing**: Created unit and integration tests to verify the fix
+
+**Files Modified**:
+
+- [`src/omoai/api/services.py`](src/omoai/api/services.py) - Core filtering logic enhancement
+- [`src/omoai/api/models.py`](src/omoai/api/models.py) - Added "summary" literal support
+- [`src/omoai/api/main_controller.py`](src/omoai/api/main_controller.py) - Updated method signature
+- [`tests/test_api_include_filtering.py`](tests/test_api_include_filtering.py) - Unit tests for filtering logic
+- [`tests/test_api_include_integration.py`](tests/test_api_include_integration.py) - Integration tests
+- [`docs/API_INCLUDE_FILTERING_FIX.md`](docs/API_INCLUDE_FILTERING_FIX.md) - Documentation
+
+**Test Coverage**:
+
+- ✅ Unit tests for include filtering logic
+- ✅ Integration tests with configuration validation
+- ✅ Model definition validation tests
+- ✅ Backward compatibility tests
+
+**Verification**:
+All tests pass, including new API include filtering tests. The fix ensures that both `summary` and `timestamped_summary` fields are only included when explicitly requested via the `include` parameter.
+
+---
+
 ### BUG-001: CUDA Multiprocessing Fork Initialization Error [RESOLVED]
 
 **Status**: ✅ Fixed

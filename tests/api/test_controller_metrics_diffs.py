@@ -13,7 +13,12 @@ async def test_controller_includes_metrics_and_diffs_when_requested(monkeypatch)
 
     async def fake_run_full_pipeline(data, params):
         return PipelineResponse(
-            summary={"title": "t", "summary": "a", "bullets": ["p1"]},
+            summary={
+                "title": "t",
+                "summary": "a",
+                "bullets": ["p1"],
+                "raw": "raw summary",
+            },
             segments=[],
             transcript_punct="Hello.",
             quality_metrics=QualityMetrics(wer=0.1, cer=0.05, alignment_confidence=0.9),
@@ -23,7 +28,6 @@ async def test_controller_includes_metrics_and_diffs_when_requested(monkeypatch)
                 diff_output="- hello\n+ Hello.",
                 alignment_summary="ok",
             ),
-            summary_raw_text="raw summary",
         )
 
     import omoai.api.main_controller as mc
@@ -42,7 +46,7 @@ async def test_controller_includes_metrics_and_diffs_when_requested(monkeypatch)
         assert data["quality_metrics"]["wer"] == 0.1
         assert data["diffs"] is not None
         assert data["diffs"]["punctuated_text"] == "Hello."
-        assert data.get("summary_raw_text") == "raw summary"
+        assert data["summary"].get("raw") == "raw summary"
 
 
 @pytest.mark.asyncio
@@ -57,12 +61,16 @@ async def test_controller_excludes_metrics_and_diffs_when_not_requested(monkeypa
     async def fake_run_full_pipeline(data, params):
         # service may compute metrics/diffs but API should omit them when not requested
         return PipelineResponse(
-            summary={"title": "t", "summary": "a", "bullets": []},
+            summary={
+                "title": "t",
+                "summary": "a",
+                "bullets": [],
+                "raw": "raw summary",
+            },
             segments=[],
             transcript_punct="Hello.",
             quality_metrics=QualityMetrics(wer=0.1),
             diffs=HumanReadableDiff(punctuated_text="Hello."),
-            summary_raw_text="raw summary",
         )
 
     import omoai.api.main_controller as mc
@@ -79,4 +87,4 @@ async def test_controller_excludes_metrics_and_diffs_when_not_requested(monkeypa
         # Not requested => omitted by default
         assert data.get("quality_metrics") is None
         assert data.get("diffs") is None
-        assert data.get("summary_raw_text") is None
+        assert data["summary"].get("raw") is None

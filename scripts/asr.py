@@ -164,108 +164,200 @@ def run_asr(
     audio = AudioSegment.from_file(str(audio_path))
     audio = audio.set_frame_rate(16000).set_sample_width(2).set_channels(1)
     audio_duration_s: float = len(audio) / 1000.0
-    waveform = torch.as_tensor(
+    waveform_full = torch.as_tensor(
         audio.get_array_of_samples(), dtype=torch.float32
     ).unsqueeze(0)
 
-    # Extract log-mel filterbank features (Kaldi fbank) like decode.py
-    xs = kaldi.fbank(
-        waveform,
-        num_mel_bins=80,
-        frame_length=25,
-        frame_shift=10,
-        dither=0.0,
-        energy_floor=0.0,
-        sample_frequency=16000,
-    ).unsqueeze(0)
+    def _sec_to_hhmmssms(seconds: float) -> str:
+        from chunkformer.model.utils.ctc_utils import milliseconds_to_hhmmssms as _msfmt
 
-    # Prepare caches
-    offset = torch.zeros(1, dtype=torch.int, device=device)
-    att_cache = torch.zeros(
-        (
-            model.encoder.num_blocks,
-            left_context_size,
-            model.encoder.attention_heads,
-            model.encoder._output_size * 2 // model.encoder.attention_heads,
-        ),
-    ).to(device)
-    cnn_cache = torch.zeros(
-        (model.encoder.num_blocks, model.encoder._output_size, conv_lorder),
-    ).to(device)
+        ms = int(max(0.0, float(seconds)) * 1000.0)
+        return _msfmt(ms)
 
-    hyps: list[torch.Tensor] = []
-    # Use explicit autocast for better performance
-    ctx = torch.autocast(device.type, dtype=amp_dtype, enabled=(amp_dtype is not None))
-    # Use inference_mode for better performance over no_grad
-    with torch.inference_mode(), ctx:
-        for idx, _ in enumerate(
-            range(0, xs.shape[1], truncated_context_size * subsampling_factor)
-        ):
-            start = max(truncated_context_size * subsampling_factor * idx, 0)
-            end = min(
-                truncated_context_size * subsampling_factor * (idx + 1) + 7,
-                xs.shape[1],
-            )
+    def _decode_waveform_slice(waveform_slice: torch.Tensor) -> list[dict[str, Any]]:
+        # Extract log-mel filterbank features (Kaldi fbank) like decode.py
+        xs_local = kaldi.fbank(
+            waveform_slice,
+            num_mel_bins=80,
+            frame_length=25,
+            frame_shift=10,
+            dither=0.0,
+            energy_floor=0.0,
+            sample_frequency=16000,
+        ).unsqueeze(0)
 
-            x = xs[:, start : end + rel_right_context_size]
-            x_len = torch.tensor([x[0].shape[0]], dtype=torch.int).to(device)
-
+        # Prepare caches per window
+        offset_l = torch.zeros(1, dtype=torch.int, device=device)
+        att_cache_l = torch.zeros(
             (
-                encoder_outs,
-                encoder_lens,
-                _,
-                att_cache,
-                cnn_cache,
-                offset,
-            ) = model.encoder.forward_parallel_chunk(
-                xs=x,
-                xs_origin_lens=x_len,
-                chunk_size=chunk_size,
-                left_context_size=left_context_size,
-                right_context_size=right_context_size,
-                att_cache=att_cache,
-                cnn_cache=cnn_cache,
-                truncated_context_size=truncated_context_size,
-                offset=offset,
-            )
+                model.encoder.num_blocks,
+                left_context_size,
+                model.encoder.attention_heads,
+                model.encoder._output_size * 2 // model.encoder.attention_heads,
+            ),
+        ).to(device)
+        cnn_cache_l = torch.zeros(
+            (model.encoder.num_blocks, model.encoder._output_size, conv_lorder),
+        ).to(device)
 
-            encoder_outs = encoder_outs.reshape(1, -1, encoder_outs.shape[-1])[
-                :, :encoder_lens
-            ]
-            if (
-                chunk_size * multiply_n * subsampling_factor * idx
-                + rel_right_context_size
-                < xs.shape[1]
+        hyps_local: list[torch.Tensor] = []
+        ctx = torch.autocast(device.type, dtype=amp_dtype, enabled=(amp_dtype is not None))
+        with torch.inference_mode(), ctx:
+            for idx, _ in enumerate(
+                range(0, xs_local.shape[1], truncated_context_size * subsampling_factor)
             ):
-                # exclude the output of relative right context
-                encoder_outs = encoder_outs[:, :truncated_context_size]
+                start = max(truncated_context_size * subsampling_factor * idx, 0)
+                end = min(
+                    truncated_context_size * subsampling_factor * (idx + 1) + 7,
+                    xs_local.shape[1],
+                )
 
-            offset = offset - encoder_lens + encoder_outs.shape[1]
+                x = xs_local[:, start : end + rel_right_context_size]
+                x_len = torch.tensor([x[0].shape[0]], dtype=torch.int).to(device)
 
-            hyp = model.encoder.ctc_forward(encoder_outs).squeeze(0)
-            hyps.append(hyp)
-            # Only clear cache if debug flag is set - normally let PyTorch manage memory
-            if DEBUG_EMPTY_CACHE and device.type == "cuda":
-                torch.cuda.empty_cache()
-            if (
-                chunk_size * multiply_n * subsampling_factor * idx
-                + rel_right_context_size
-                >= xs.shape[1]
-            ):
-                break
+                (
+                    encoder_outs,
+                    encoder_lens,
+                    _,
+                    att_cache_l,
+                    cnn_cache_l,
+                    offset_l,
+                ) = model.encoder.forward_parallel_chunk(
+                    xs=x,
+                    xs_origin_lens=x_len,
+                    chunk_size=chunk_size,
+                    left_context_size=left_context_size,
+                    right_context_size=right_context_size,
+                    att_cache=att_cache_l,
+                    cnn_cache=cnn_cache_l,
+                    truncated_context_size=truncated_context_size,
+                    offset=offset_l,
+                )
 
-    if len(hyps) == 0:
-        segments: list[dict[str, Any]] = []
-        transcript_raw = ""
-    else:
-        hyps_cat = torch.cat(hyps)
+                encoder_outs = encoder_outs.reshape(1, -1, encoder_outs.shape[-1])[
+                    :, :encoder_lens
+                ]
+                if (
+                    chunk_size * multiply_n * subsampling_factor * idx
+                    + rel_right_context_size
+                    < xs_local.shape[1]
+                ):
+                    # exclude the output of relative right context
+                    encoder_outs = encoder_outs[:, :truncated_context_size]
+
+                offset_l = offset_l - encoder_lens + encoder_outs.shape[1]
+
+                hyp = model.encoder.ctc_forward(encoder_outs).squeeze(0)
+                hyps_local.append(hyp)
+                if DEBUG_EMPTY_CACHE and device.type == "cuda":
+                    torch.cuda.empty_cache()
+                if (
+                    chunk_size * multiply_n * subsampling_factor * idx
+                    + rel_right_context_size
+                    >= xs_local.shape[1]
+                ):
+                    break
+
+        if not hyps_local:
+            return []
+        hyps_cat = torch.cat(hyps_local)
         decode = get_output_with_timestamps([hyps_cat], char_dict)[0]
-        segments = [
+        return [
             {"start": item["start"], "end": item["end"], "text_raw": item["decode"]}
             for item in decode
         ]
+
+    # Optional VAD pre-segmentation
+    # Lazy imports for config and utils to avoid early sys.path issues
+    from omoai.config.schemas import get_config  # type: ignore
+    from omoai.integrations.vad import (  # type: ignore
+        apply_overlap,
+        detect_speech,
+        merge_chunks,
+    )
+    from omoai.pipeline.postprocess_core_utils import (
+        _parse_time_to_seconds as _parse_time_to_seconds,  # type: ignore
+    )
+    cfg = get_config()
+    use_vad = False
+    windows: list[dict] = []
+    try:
+        vcfg = getattr(cfg, "vad", None)
+        if vcfg and bool(getattr(vcfg, "enabled", False)):
+            use_vad = True
+            intervals = detect_speech(
+                audio_path,
+                method=getattr(vcfg, "method", "webrtc"),
+                sample_rate=16000,
+                vad_onset=float(getattr(vcfg, "vad_onset", 0.5)),
+                vad_offset=float(getattr(vcfg, "vad_offset", 0.363)),
+                min_speech_s=float(getattr(vcfg, "min_speech_s", 0.3)),
+                min_silence_s=float(getattr(vcfg, "min_silence_s", 0.3)),
+                chunk_size=float(getattr(vcfg, "chunk_size", 30.0)),
+                # webrtc
+                webrtc_mode=int(getattr(getattr(vcfg, "webrtc", None), "mode", 2)),
+                frame_ms=int(getattr(getattr(vcfg, "webrtc", None), "frame_ms", 20)),
+                # silero
+                speech_pad_ms=int(getattr(getattr(vcfg, "silero", None), "speech_pad_ms", 30)),
+                window_size_samples=int(getattr(getattr(vcfg, "silero", None), "window_size_samples", 512)),
+                device=str(getattr(vcfg, "device", "cpu")),
+            )
+            if intervals:
+                windows = merge_chunks(intervals, chunk_size=float(getattr(vcfg, "chunk_size", 30.0)))
+                windows = apply_overlap(
+                    windows,
+                    overlap_s=float(getattr(vcfg, "overlap_s", 0.4)),
+                    audio_duration=audio_duration_s,
+                )
+            else:
+                use_vad = False
+    except (ImportError, AttributeError, ValueError) as e:
+        logger.debug(f"VAD setup failed: {e}")
+        use_vad = False
+        windows = []
+
+    segments: list[dict[str, Any]] = []
+    transcript_raw = ""
+
+    if use_vad and windows:
+        try:
+            speech_seconds = sum(
+                max(0.0, float(w.get("end", 0.0)) - float(w.get("start", 0.0))) for w in windows
+            )
+            ratio = speech_seconds / max(1e-6, float(audio_duration_s))
+            logger.info(
+                f"[VAD] enabled method={getattr(cfg.vad, 'method', 'unknown')} windows={len(windows)} "
+                f"speech_ratio={ratio:.3f}"
+            )
+        except (ValueError, TypeError) as e:
+            logger.debug(f"VAD ratio calculation failed: {e}")
+        for w in windows:
+            ws = float(w.get("start", 0.0) or 0.0)
+            we = float(w.get("end", ws) or ws)
+            s_idx = int(max(0.0, ws) * 16000.0)
+            e_idx = int(min(audio_duration_s, we) * 16000.0)
+            if e_idx <= s_idx:
+                continue
+            wf_slice = waveform_full[:, s_idx:e_idx]
+            segs_local = _decode_waveform_slice(wf_slice)
+            # Offset local times by window start; keep HH:MM:SS:MS format
+            for seg in segs_local:
+                start_s = _parse_time_to_seconds(seg.get("start")) or 0.0
+                end_s = _parse_time_to_seconds(seg.get("end")) or start_s
+                seg["start"] = _sec_to_hhmmssms(ws + start_s)
+                seg["end"] = _sec_to_hhmmssms(ws + end_s)
+            segments.extend(segs_local)
         transcript_raw = (
-            " ".join(seg["text_raw"].strip() for seg in segments if seg["text_raw"])
+            " ".join(seg.get("text_raw", "").strip() for seg in segments if seg.get("text_raw"))
+            .replace("  ", " ")
+            .strip()
+        )
+    else:
+        # Fallback to single-window full audio path
+        segs_local = _decode_waveform_slice(waveform_full)
+        segments = segs_local
+        transcript_raw = (
+            " ".join(seg.get("text_raw", "").strip() for seg in segments if seg.get("text_raw"))
             .replace("  ", " ")
             .strip()
         )
@@ -289,6 +381,117 @@ def run_asr(
             },
         },
     }
+    # Add VAD metadata when used
+    try:
+        if use_vad:
+            output.setdefault("metadata", {}).setdefault("vad", {})
+            output["metadata"]["vad"] = {
+                "enabled": True,
+                "method": getattr(cfg.vad, "method", "webrtc"),
+                "chunk_size": getattr(cfg.vad, "chunk_size", 30.0),
+                "overlap_s": getattr(cfg.vad, "overlap_s", 0.4),
+                "windows": len(windows or []),
+                "speech_ratio": (
+                    sum(max(0.0, float(w.get("end", 0.0)) - float(w.get("start", 0.0))) for w in windows)
+                    / max(1e-6, float(audio_duration_s))
+                ),
+            }
+    except (ValueError, TypeError) as e:
+        logger.debug(f"VAD metadata calculation failed: {e}")
+
+    # Alignment processing
+    alignment_device = None
+    try:
+        if cfg.alignment.enabled:
+            logger.info("Starting phonetic alignment processing")
+
+            # Import alignment functions
+            from omoai.integrations.alignment import (
+                align_segments,
+                load_alignment_model,
+                merge_alignment_back,
+                to_whisperx_segments,
+            )
+
+            # Determine alignment language
+            alignment_language = cfg.alignment.language
+            if alignment_language == "auto":
+                # Default to Vietnamese for now, can be extended to auto-detect
+                alignment_language = "vi"
+
+            # Load alignment model
+            alignment_device = cfg.alignment.device
+            if alignment_device == "auto":
+                alignment_device = "cuda" if torch.cuda.is_available() else "cpu"
+
+            logger.info(f"Loading alignment model for language: {alignment_language}, device: {alignment_device}")
+            align_model, align_metadata = load_alignment_model(
+                language=alignment_language,
+                device=alignment_device,
+                model_name=cfg.alignment.align_model,
+            )
+
+            # Convert segments to alignment format
+            logger.info(f"[ALIGNMENT] Converting {len(segments)} segments to whisperx format.")
+            wx_segments = to_whisperx_segments(segments)
+            logger.info(f"[ALIGNMENT] Converted to {len(wx_segments)} wx_segments: {wx_segments}")
+            if not wx_segments:
+                logger.warning("No segments to align, skipping alignment")
+            else:
+                logger.info(f"Aligning {len(wx_segments)} segments")
+
+                # Run alignment
+                aligned_result = align_segments(
+                    wx_segments=wx_segments,
+                    audio_path_or_array=str(audio_path),
+                    model=align_model,
+                    metadata=align_metadata,
+                    device=alignment_device,
+                    return_char_alignments=cfg.alignment.return_char_alignments,
+                    interpolate_method=cfg.alignment.interpolate_method,
+                    print_progress=cfg.alignment.print_progress,
+                )
+                logger.info(f"[ALIGNMENT] align_segments result: {aligned_result}")
+
+                # Merge alignment results back
+                enriched_segments, word_segments = merge_alignment_back(segments, aligned_result)
+                logger.info(f"[ALIGNMENT] merge_alignment_back enriched_segments: {enriched_segments}")
+                logger.info(f"[ALIGNMENT] merge_alignment_back word_segments: {word_segments}")
+
+                # Update output with enriched segments and word segments
+                output["segments"] = enriched_segments
+                output["word_segments"] = word_segments
+
+                # Add alignment metadata
+                output.setdefault("metadata", {}).setdefault("alignment", {})
+                output["metadata"]["alignment"] = {
+                    "enabled": True,
+                    "language": alignment_language,
+                    "model": cfg.alignment.align_model or "default",
+                    "device": alignment_device,
+                    "return_char_alignments": cfg.alignment.return_char_alignments,
+                    "interpolate_method": cfg.alignment.interpolate_method,
+                    "segments_aligned": len(enriched_segments),
+                    "words_aligned": len(word_segments),
+                }
+
+                logger.info(f"Alignment completed: {len(enriched_segments)} segments, {len(word_segments)} words")
+
+    except (ImportError, RuntimeError, ValueError, OSError) as e:
+        logger.warning(f"Alignment failed: {e}", exc_info=True)
+        # Add failure metadata
+        output.setdefault("metadata", {}).setdefault("alignment", {})
+        output["metadata"]["alignment"] = {
+            "enabled": cfg.alignment.enabled,
+            "error": str(e),
+            "status": "failed",
+        }
+    finally:
+        # Clean up GPU memory if CUDA was used
+        if cfg.alignment.enabled and alignment_device == "cuda" and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            if DEBUG_EMPTY_CACHE:
+                logger.info("Cleared CUDA cache after alignment")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
@@ -302,7 +505,7 @@ def main() -> None:
     parser.add_argument(
         "--config",
         type=str,
-        default="/home/cetech/omoai/config.yaml",
+        default="./config.yaml",
         help="Path to config.yaml",
     )
     parser.add_argument(

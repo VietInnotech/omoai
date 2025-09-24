@@ -15,6 +15,42 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+class AlignmentConfig(BaseModel):
+    """Configuration for phonetic alignment."""
+
+    enabled: bool = Field(default=False, description="Enable or disable phonetic alignment.")
+    language: str | Literal["auto"] = Field(
+        default="auto",
+        description='Language code for the alignment model. Use "auto" to derive from ASR language.',
+    )
+    device: Literal["cpu", "cuda", "auto"] = Field(
+        default="cpu", description="Device to use for alignment (cpu, cuda, or auto-detect)."
+    )
+    align_model: str | None = Field(
+        default=None, description="Optional override for the Hugging Face model name."
+    )
+    return_char_alignments: bool = Field(
+        default=False, description="Whether to compute and return character-level timestamps."
+    )
+    interpolate_method: Literal["nearest", "linear", "ignore"] = Field(
+        default="nearest", description="Method for interpolating word timestamps."
+    )
+    print_progress: bool = Field(
+        default=False, description="Whether to print alignment progress to the console."
+    )
+
+    @field_validator("device")
+    @classmethod
+    def resolve_device(cls, v: str) -> str:
+        if v == "auto":
+            try:
+                import torch
+                return "cuda" if torch.cuda.is_available() else "cpu"
+            except (ImportError, RuntimeError):
+                return "cpu"
+        return v
+
+
 class LoggingSettings(BaseModel):
     """Top-level logging settings, configurable via config.yaml.
 
@@ -239,6 +275,69 @@ class SamplingConfig(BaseModel):
     )
 
 
+class VADWebrtcConfig(BaseModel):
+    mode: int = Field(default=2, ge=0, le=3, description="Aggressiveness 0..3")
+    frame_ms: int = Field(default=20, description="Frame size in ms (10/20/30)")
+    # Hangover guidance — primarily covered by overlap_s globally
+    start_hangover_frames: int = Field(default=3, ge=0)
+    end_hangover_frames: int = Field(default=5, ge=0)
+
+
+class VADSileroConfig(BaseModel):
+    threshold: float = Field(default=0.50, ge=0.0, le=1.0)
+    min_speech_duration_ms: int = Field(default=250, ge=0)
+    min_silence_duration_ms: int = Field(default=100, ge=0)
+    max_speech_duration_s: float = Field(default=30.0, ge=1.0)
+    speech_pad_ms: int = Field(default=30, ge=0)
+    window_size_samples: int = Field(default=512, ge=128)
+
+
+class VADPyannoteConfig(BaseModel):
+    min_duration_on: float = Field(default=0.1, ge=0.0)
+    min_duration_off: float = Field(default=0.1, ge=0.0)
+    pad_onset: float = Field(default=0.0, ge=0.0)
+    pad_offset: float = Field(default=0.0, ge=0.0)
+
+
+class VADConfig(BaseModel):
+    """Configuration for Voice Activity Detection pre-segmentation."""
+
+    enabled: bool = Field(default=False, description="Enable VAD pre-segmentation")
+    method: Literal["webrtc", "silero", "pyannote"] = Field(
+        default="silero", description="VAD method"
+    )
+    chunk_size: float = Field(
+        default=30.0, ge=5.0, le=300.0, description="Max speech window length (s)"
+    )
+    overlap_s: float = Field(
+        default=0.4, ge=0.0, le=2.0, description="Window overlap for context (s)"
+    )
+    vad_onset: float = Field(default=0.50, ge=0.0, le=1.0)
+    vad_offset: float = Field(default=0.363, ge=0.0, le=1.0)
+    min_speech_s: float = Field(default=0.30, ge=0.0, le=2.0)
+    min_silence_s: float = Field(default=0.30, ge=0.0, le=2.0)
+    device: Literal["cpu", "cuda", "auto"] = Field(default="auto")
+    hf_token_env: str | None = Field(
+        default="HUGGINGFACE_TOKEN",
+        description="Env var name for HF token (pyannote)",
+    )
+
+    webrtc: VADWebrtcConfig = Field(default_factory=VADWebrtcConfig)
+    silero: VADSileroConfig = Field(default_factory=VADSileroConfig)
+    pyannote: VADPyannoteConfig = Field(default_factory=VADPyannoteConfig)
+
+    @field_validator("device")
+    @classmethod
+    def validate_device(cls, v: str) -> str:
+        if v == "auto":
+            try:
+                import torch  # type: ignore
+
+                return "cuda" if torch.cuda.is_available() else "cpu"
+            except (ImportError, RuntimeError):
+                return "cpu"
+        return v
+
 class PunctuationConfig(BaseModel):
     """Configuration for punctuation restoration."""
 
@@ -280,6 +379,21 @@ class PunctuationConfig(BaseModel):
         default=None,
         description="A user-defined prompt to guide the punctuation model.",
     )
+
+    @field_validator("system_prompt", "user_prompt", mode="before")
+    @classmethod
+    def resolve_prompt_file_refs(cls, v):
+        """Allow @file:/path/to/file to load prompt content from file.
+
+        Useful for overriding large prompts via environment variables.
+        """
+        if isinstance(v, str) and v.startswith("@file:"):
+            path = Path(v[len("@file:"):])
+            try:
+                return path.read_text(encoding="utf-8")
+            except Exception as e:
+                raise ValueError(f"Failed to read prompt file {path}: {e}") from e
+        return v
     sampling: SamplingConfig = Field(
         default_factory=SamplingConfig,
         description="Sampling configuration",
@@ -313,10 +427,55 @@ class SummarizationConfig(BaseModel):
         default=None,
         description="A user-defined prompt to guide the summarization model.",
     )
+
+    @field_validator("system_prompt", "user_prompt", mode="before")
+    @classmethod
+    def resolve_prompt_file_refs(cls, v):
+        if isinstance(v, str) and v.startswith("@file:"):
+            path = Path(v[len("@file:"):])
+            try:
+                return path.read_text(encoding="utf-8")
+            except Exception as e:
+                raise ValueError(f"Failed to read prompt file {path}: {e}") from e
+        return v
     sampling: SamplingConfig = Field(
         default_factory=lambda: SamplingConfig(temperature=0.7),
         description="Sampling configuration",
     )
+
+
+class TimestampedSummaryConfig(BaseModel):
+    """Configuration for timestamped summarization."""
+
+    llm: LLMConfig = Field(
+        description="LLM configuration for timestamped summarization",
+    )
+    auto_margin_tokens: int = Field(
+        default=256, ge=0, description="Automatic margin tokens for context"
+    )
+    return_raw: bool = Field(
+        default=False, description="Return raw LLM response alongside parsed result"
+    )
+    system_prompt: str | None = Field(
+        default=None, description="Custom system prompt for timestamped summarization"
+    )
+    user_prompt: str | None = Field(
+        default=None, description="Custom user prompt template for timestamped summarization"
+    )
+    sampling: SamplingConfig = Field(
+        default_factory=SamplingConfig, description="Sampling parameters"
+    )
+
+    @field_validator("system_prompt", "user_prompt", mode="before")
+    @classmethod
+    def resolve_prompt_file_refs(cls, v):
+        if isinstance(v, str) and v.startswith("@file:"):
+            path = Path(v[len("@file:"):])
+            try:
+                return path.read_text(encoding="utf-8")
+            except Exception as e:
+                raise ValueError(f"Failed to read prompt file {path}: {e}") from e
+        return v
 
 
 class TranscriptOutputConfig(BaseModel):
@@ -363,7 +522,7 @@ class APIDefaultsConfig(BaseModel):
     """
 
     formats: list[Literal["json", "text", "srt", "vtt", "md"]] | None = None
-    include: list[Literal["transcript_raw", "transcript_punct", "segments"]] | None = None
+    include: list[Literal["transcript_raw", "transcript_punct", "segments", "timestamped_summary", "summary"]] | None = None
     ts: Literal["none", "s", "ms", "clock"] | None = None
     summary: Literal["bullets", "abstract", "both", "none"] | None = None
     summary_bullets_max: int | None = None
@@ -371,6 +530,9 @@ class APIDefaultsConfig(BaseModel):
     include_quality_metrics: bool | None = None
     include_diffs: bool | None = None
     return_summary_raw: bool | None = None
+    include_vad: bool | None = None
+    summary_fields: list[Literal["title", "abstract", "bullets", "raw"]] | None = None
+    timestamped_summary_fields: list[Literal["summary_text", "timestamps", "raw"]] | None = None
 
 
 class OutputConfig(BaseModel):
@@ -514,11 +676,16 @@ class OmoAIConfig(BaseSettings):
         default=None, description="Logging configuration"
     )
     asr: ASRConfig = Field(default_factory=ASRConfig)
+    vad: VADConfig = Field(default_factory=VADConfig)
+    alignment: AlignmentConfig = Field(default_factory=AlignmentConfig)
     llm: LLMConfig = Field(
         description="Base LLM configuration (model_id required)",
     )
     punctuation: PunctuationConfig
     summarization: SummarizationConfig
+    timestamped_summary: TimestampedSummaryConfig | None = Field(
+        default=None, description="Configuration for timestamped summarization"
+    )
     output: OutputConfig | None = Field(
         default=None, description="Output configuration"
     )
@@ -531,18 +698,22 @@ class OmoAIConfig(BaseSettings):
         if not self.llm.model_id:
             raise ValueError("Base llm.model_id is required")
 
-        # Ensure punctuation and summarization inherit base LLM model_id if not set
+        # Ensure punctuation, summarization, and timestamped_summary inherit base LLM model_id if not set
         if not self.punctuation.llm.model_id:
             self.punctuation.llm.model_id = self.llm.model_id
 
         if not self.summarization.llm.model_id:
             self.summarization.llm.model_id = self.llm.model_id
 
+        if self.timestamped_summary and not self.timestamped_summary.llm.model_id:
+            self.timestamped_summary.llm.model_id = self.llm.model_id
+
         # Validate trust_remote_code consistency
         if (
             self.llm.trust_remote_code
             or self.punctuation.llm.trust_remote_code
             or self.summarization.llm.trust_remote_code
+            or (self.timestamped_summary and self.timestamped_summary.llm.trust_remote_code)
         ):
             import warnings
 
@@ -558,6 +729,8 @@ class OmoAIConfig(BaseSettings):
     @classmethod
     def load_from_yaml(cls, config_path: Path) -> "OmoAIConfig":
         """Load configuration from YAML file with validation."""
+        import os
+
         import yaml
 
         if not config_path.exists():
@@ -571,6 +744,20 @@ class OmoAIConfig(BaseSettings):
 
         if not raw_config:
             raise ValueError(f"Empty configuration file: {config_path}")
+
+        # Allow targeted env overrides for large prompt fields (robust even if
+        # nested env processing is limited by BaseSettings semantics)
+        punct = raw_config.setdefault("punctuation", {})
+        summ = raw_config.setdefault("summarization", {})
+        for env_key, dst in (
+            ("OMOAI_PUNCTUATION__SYSTEM_PROMPT", (punct, "system_prompt")),
+            ("OMOAI_PUNCTUATION__USER_PROMPT", (punct, "user_prompt")),
+            ("OMOAI_SUMMARIZATION__SYSTEM_PROMPT", (summ, "system_prompt")),
+            ("OMOAI_SUMMARIZATION__USER_PROMPT", (summ, "user_prompt")),
+        ):
+            val = os.environ.get(env_key)
+            if val:
+                dst[0][dst[1]] = val
 
         try:
             return cls(**raw_config)

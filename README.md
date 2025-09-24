@@ -1,146 +1,66 @@
 # OMOAI — Audio Processing Pipeline (ASR + Punctuation + Summarization)
 
-A production-ready pipeline to transcribe and summarize long-form audio (e.g., podcasts). It uses the `Chunkformer` model for ASR and an LLM (via vLLM) for punctuation, capitalization, and summarization.
+A production-ready pipeline to transcribe and summarize long-form audio, with a primary focus on Vietnamese. It uses the `Chunkformer` model for ASR and an LLM (via vLLM) for punctuation, capitalization, and summarization.
 
 ## Features
 
-- **High-quality ASR**: Chunkformer-based decoding with timestamped segments.
+- **High-quality ASR**: Chunkformer-based decoding with word-level timestamps through forced alignment.
 - **Long-audio support**: Chunked decoding for multi-hour recordings.
-- **Enhanced Punctuation & capitalization**: Advanced LLM-based punctuation with character-level alignment and quality metrics.
-- **Quality Assessment**: Comprehensive metrics including WER, CER, PER, U-WER, and F-WER for evaluating punctuation accuracy.
-- **Summarization**: Bullets and abstract (single-pass or map-reduce for long texts).
-- **Config-driven**: Single `config.yaml` controls paths, ASR, LLM, API, and outputs.
-- **Outputs**: Always writes `final.json`; optionally writes transcript and summary text files when enabled in config.
-- **CLI & REST API**: Run locally or as a web service.
+- **Advanced Punctuation & Capitalization**: LLM-based punctuation and capitalization.
+- **Summarization**: Abstractive and extractive summarization with timestamps.
+- **Timestamped Summary**: Key topics with timestamps extracted from the transcript.
+- **Config-driven**: A single `config.yaml` controls all aspects of the pipeline.
+- **Multiple Output Formats**: Supports JSON, plain text, SRT, VTT, and Markdown.
+- **CLI & REST API**: Can be run locally from the command line or as a web service.
+- **Voice Activity Detection (VAD)**: Optional VAD pre-segmentation to skip silence and improve performance on long audio files.
+- **CUDA Memory Optimization**: Advanced memory management for GPU efficiency.
 
 ## Architecture
 
-1. **Preprocess**: Convert input audio to 16kHz mono PCM16 WAV (ffmpeg).
-2. **ASR**: Transcribe with Chunkformer, produce segments and raw transcript (`asr.json`).
-3. **Post-process**: LLM adds punctuation and generates summary; write `final.json` and optional text files.
+1.  **Preprocessing**: Converts input audio to 16kHz mono PCM16 WAV using `ffmpeg`.
+2.  **VAD (Optional)**: `silero-vad` or `webrtcvad` splits the audio into speech segments.
+3.  **ASR**: Transcribes the audio with ChunkFormer, producing a raw transcript with segment-level timestamps.
+4.  **Alignment**: A wav2vec2 model is used to generate word-level timestamps.
+5.  **Post-processing**: An LLM adds punctuation, generates a summary, and extracts timestamped key topics.
 
-See details in `docs/architecture/index.md`.
+For a more detailed explanation of the architecture, see the [Architecture Documentation](docs/ARCHITECTURE.md).
 
 ## Requirements
 
 - Python 3.11+
-- Linux/macOS/Windows
 - `ffmpeg`
-- NVIDIA GPU with CUDA (recommended) for ASR and vLLM
-
-Tip: verify `ffmpeg` with `ffmpeg -version`.
+- NVIDIA GPU with CUDA (recommended for ASR and vLLM)
 
 ## Installation
 
-1. Clone and enter the repo
+1.  Clone the repository:
+    ```bash
+    git clone <repository-url>
+    cd <repository-directory>
+    ```
 
-```bash
-git clone <repository-url>
-cd <repository-directory>
-```
+2.  Create a virtual environment and install the dependencies:
+    ```bash
+    uv venv
+    source .venv/bin/activate
+    uv pip install -e .
+    ```
 
-1. Create a virtual env with uv and install
-
-```bash
-uv venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-uv pip install -e .
-```
-
-1. Prepare models
-
-- Place the Chunkformer checkpoint at `models/chunkformer/chunkformer-large-vie` (or update `paths.chunkformer_checkpoint` in `config.yaml`).
-- Ensure `paths.chunkformer_dir` points to `./src/chunkformer` (default) or your local Chunkformer source.
+3.  Prepare the models:
+    *   Place the Chunkformer checkpoint at `models/chunkformer/chunkformer-large-vie` (or update `paths.chunkformer_checkpoint` in `config.yaml`).
+    *   The LLM model `cpatonn/Qwen3-4B-Instruct-2507-AWQ-4bit` will be automatically downloaded on first use.
 
 ## Configuration
 
-All settings are in `config.yaml`. Key sections:
+All settings are in `config.yaml`. For a detailed explanation of all the configuration options, please refer to the [Component: Configuration](docs/COMPONENT_CONFIGURATION_DOCS.md) documentation.
 
-```yaml
-paths:
-  chunkformer_dir: ./src/chunkformer
-  chunkformer_checkpoint: ./models/chunkformer/chunkformer-large-vie
-  out_dir: ./data/output
+## Configuration Highlights
 
-asr:
-  total_batch_duration_s: 1800
-  chunk_size: 64
-  left_context_size: 128
-  right_context_size: 128
-  device: auto # auto -> cuda if available else cpu
-  autocast_dtype: fp16 # on CUDA
-
-llm:
-  model_id: cpatonn/Qwen3-4B-Instruct-2507-AWQ-4bit
-  quantization: auto
-  max_model_len: 50000
-  gpu_memory_utilization: 0.90
-  max_num_seqs: 2
-  max_num_batched_tokens: 512
-  trust_remote_code: true # Only enable for trusted models
-
-punctuation:
-  llm: { ... } # Overrides; inherits from llm when omitted
-  preserve_original_words: true
-  auto_switch_ratio: 0.98
-  auto_margin_tokens: 128
-  adopt_case: true
-  enable_paragraphs: true
-  join_separator: " "
-  paragraph_gap_seconds: 3.0
-  # Enhanced alignment settings
-  alignment:
-    use_levenshtein: true # Use Levenshtein distance for word alignment
-    enable_character_level: true # Enable character-level refinement
-    compute_quality_metrics: true # Calculate WER, CER, PER, U-WER, F-WER
-    generate_diffs: true # Generate human-readable diffs
-  system_prompt: |
-    <instruction>
-    You are a Vietnamese text punctuation engine...
-    </instruction>
-
-summarization:
-  llm: { ... } # Overrides; inherits from llm when omitted
-  map_reduce: false
-  auto_switch_ratio: 0.98
-  auto_margin_tokens: 256
-  system_prompt: |
-    <instruction>
-    You are a Vietnamese text analysis engine...
-    </instruction>
-
-# Legacy output controls used by scripts/post.py
-write_separate_files: true
-transcript_file: transcript.txt
-summary_file: summary.txt
-wrap_width: 0
-
-# Optional structured output config for library usage
-formats: ["json", "text", "srt", "vtt", "md"]
-transcript:
-  include_raw: true
-  include_punct: true
-  include_segments: true
-  timestamps: clock
-  wrap_width: 100
-summary:
-  mode: both
-  bullets_max: 7
-  abstract_max_chars: 1000
-  language: vi
-final_json: final.json
-
-api:
-  host: 0.0.0.0
-  port: 8000
-  max_body_size_mb: 100
-  request_timeout_seconds: 300
-  temp_dir: /tmp
-  cleanup_temp_files: true
-  enable_progress_output: true
-```
-
-- Use `OMOAI_CONFIG=/abs/path/to/config.yaml` to override config location at runtime.
+- **LLM Configuration**: Model selection, quantization, memory utilization, and prompt customization
+- **Output Formats**: JSON, text, SRT, VTT, Markdown with comprehensive control over content
+- **API Settings**: Response format defaults, timeout settings, and subprocess streaming
+- **Memory Optimization**: CUDA allocator configuration and multiprocessing settings
+- **VAD Options**: Multiple VAD methods with fine-tuned parameters
 
 ## Quickstart (CLI)
 
@@ -148,47 +68,9 @@ Run the full pipeline on an audio file:
 
 ```bash
 uv run start data/input/your_audio.mp3
-# or
-uv run python src/omoai/main.py data/input/your_audio.mp3
 ```
 
-Interactive mode:
-
-```bash
-uv run interactive
-# or
-uv run python src/omoai/main.py --interactive
-```
-
-Outputs are written under `paths.out_dir/<audio-stem>-<UTC-timestamp>/`, e.g.:
-
-```text
-data/output/my_episode-20250101-120000/
-├── preprocessed.wav
-├── asr.json
-├── final.json
-├── transcript.txt      # if write_separate_files: true
-└── summary.txt         # if write_separate_files: true
-```
-
-### Stage-by-stage processing
-
-```bash
-# Using the main CLI (recommended approach; runs script-based stages)
-uv run start data/input/your_audio.mp3
-
-# Or call individual stages via the packaged scripts
-python -m scripts.asr --config config.yaml --audio data/input/your_audio.mp3 --out /tmp/asr.json
-python -m scripts.post --config config.yaml --asr-json /tmp/asr.json --out /tmp/final.json
-```
-
-### Pipeline architecture
-
-The in-memory pipeline has been removed. All stages run via robust, script-based executables:
-
-- Preprocess: ffmpeg (via `run_preprocess_script`)
-- ASR: `python -m scripts.asr`
-- Postprocess (punctuation + summary): `python -m scripts.post`
+This will create a new directory in `data/output` containing the results of the pipeline.
 
 ## REST API
 
@@ -196,144 +78,42 @@ Start the server:
 
 ```bash
 uv run api
-# or
-uv run litestar --app omoai.api.app:app run --host 0.0.0.0 --port 8000
 ```
 
-Endpoints:
+The API will be available at `http://localhost:8000`.
 
-- `POST /v1/pipeline` (multipart form): run full pipeline.
-- `POST /v1/preprocess` (multipart form): preprocess only.
-- `POST /v1/asr` (JSON): run ASR on a local preprocessed path.
-- `POST /v1/postprocess` (JSON): run punctuation+summary on provided ASR output.
-- `GET /v1/health`: health check (ffmpeg, config, scripts).
-- `GET /v1/metrics`: get system metrics.
+**Endpoints:**
 
-Examples:
+*   `POST /v1/pipeline`: Run the full pipeline on an audio file.
+*   `GET /v1/health`: Health check endpoint.
+*   `GET /v1/metrics`: Prometheus metrics endpoint.
 
-```bash
-# Full pipeline (default JSON response). Use Accept: text/plain to get text.
-curl -X POST 'http://localhost:8000/v1/pipeline' \
-  -F 'audio_file=@data/input/audio.mp3' 
+For more details on the API, please refer to the [Component: API](docs/COMPONENT_API_DOCS.md) documentation.
 
-# Structured JSON with options
-curl -X POST 'http://localhost:8000/v1/pipeline?include=segments&ts=clock&summary=both&summary_bullets_max=5' \
-  -F 'audio_file=@data/input/audio.mp3'
+## Memory Optimization
 
-# Include raw LLM summary in JSON
-curl -X POST 'http://localhost:8000/v1/pipeline?return_summary_raw=true' \
-  -F 'audio_file=@data/input/audio.mp3'
+The system includes advanced CUDA memory management features:
 
-# Return only raw LLM summary as text
-curl -X POST 'http://localhost:8000/v1/pipeline?formats=text&return_summary_raw=true' \
-  -F 'audio_file=@data/input/audio.mp3'
-
-# Health
-curl 'http://localhost:8000/v1/health'
-```
-
-Notes:
-
-- By default, `/v1/pipeline` returns structured JSON (`PipelineResponse`).
-- To receive plain text, either set `Accept: text/plain` or pass `?formats=text`.
-- When `return_summary_raw=true` is provided, responses include `summary_raw_text` (JSON) or return the raw summary in text mode.
-- Configurable defaults:
-  - `api.default_response_format`: `json` (default) or `text`
-  - `api.allow_accept_override`: if true, `Accept: text/plain` can force text
-  - `api.allow_query_format_override`: if true, `?formats=text` can force text
-- The `/v1/health` endpoint checks `ffmpeg`, configuration file availability, and the presence of script modules/wrappers used by the pipeline.
-- The `/v1/metrics` endpoint provides system-wide metrics.
-
-### Async Processing
-
-For long-running tasks, use async processing:
-
-```bash
-# Submit async job
-curl -X POST 'http://localhost:8000/v1/pipeline?async=true' \
-  -F 'audio_file=@data/input/audio.mp3'
-
-# Check job status
-curl 'http://localhost:8000/v1/jobs/{job_id}'
-```
-
-### Advanced Features
-
-- **Request IDs**: All responses include a `trace_id` in the error envelope for correlation
-- **Structured errors**: Error responses follow `{code, message, trace_id, details}` format  
-- **Timeouts**: Configurable request timeout via `api.request_timeout_seconds`
-- **Metrics**: System metrics available at `/v1/metrics`
-- **Temp cleanup**: Request-scoped temp directories with automatic cleanup
-
-### Error Handling Example
-
-```json
-{
-  "code": "audio_processing_error",
-  "message": "Audio processing failed",
-  "trace_id": "req-1234567890",
-  "details": {
-    "path": "/v1/pipeline",
-    "method": "POST"
-  }
-}
-```
-
-## Outputs
-
-- Always writes `final.json` using a canonical schema shared by scripts and API responses.
-- Summary keys are unified: `title`, `abstract`, `bullets` (no `summary` alias).
-- When `output.write_separate_files: true` or when `output.formats` includes `text`/`md`, the postprocess script also writes human‑readable text files for the punctuated transcript and summary.
-- When `output.formats` includes `srt` or `vtt`, the postprocess script emits `transcript.srt` and/or `transcript.vtt` alongside `final.json` when `--auto-outdir` is used (API runs do not save extra files by default).
-- Structured output preferences live under the `output:` block in `config.yaml` (including `formats`, transcript/summary options, and `final_json` name). The scripts respect these settings and legacy keys for compatibility.
+- **Expandable segments**: Reduces memory fragmentation
+- **Garbage collection**: Automatic memory cleanup at 80% utilization
+- **Pinned memory**: Optimized host-device transfers with background threads
+- **Multiprocessing**: Spawn method for CUDA compatibility
+- **vLLM worker optimization**: Dedicated multiprocessing settings for LLM inference
 
 ## Troubleshooting
 
-- **ffmpeg not found**: Install via your OS package manager and ensure it is on PATH.
-- **Model checkpoint missing**: Set `paths.chunkformer_checkpoint` to a valid local path.
-- **CUDA OOM / memory issues**:
-  - Lower `llm.max_num_seqs` and `llm.max_num_batched_tokens`.
-  - Reduce `asr.total_batch_duration_s` or `gpu_memory_utilization`.
-  - Use quantized models (e.g., AWQ) or set `quantization: auto`.
-- **CUDA multiprocessing errors**: Fixed in v1.0+ - see [CUDA Multiprocessing Fix](docs/CUDA_MULTIPROCESSING_FIX.md) for details.
-- **Security**: `trust_remote_code: true` executes remote code from model repos; only enable for trusted sources.
-- **Custom config location**: `export OMOAI_CONFIG=/abs/path/config.yaml`.
-- **Debug GPU cache**: set `OMOAI_DEBUG_EMPTY_CACHE=true` to hint clearing CUDA cache in some paths.
-
-## Testing
-
-```bash
-uv run pytest
-```
-
-## Project structure
-
-```text
-.
-├── config.yaml
-├── data/
-├── models/
-├── scripts/
-│   ├── preprocess.py
-│   ├── asr.py
-│   └── post.py
-├── src/
-│   ├── chunkformer/
-│   └── omoai/
-│       ├── api/
-│       ├── config/
-│       ├── logging_system/
-│       ├── pipeline/
-│       ├── interactive_cli.py
-│       └── main.py
-└── tests/
-```
+-   **`ffmpeg` not found**: Install `ffmpeg` using your OS package manager and ensure it is in your `PATH`.
+-   **Model checkpoint missing**: Make sure the `paths.chunkformer_checkpoint` in `config.yaml` points to a valid model checkpoint.
+-   **CUDA OOM / memory issues**:
+    *   Lower `llm.max_num_seqs` and `llm.max_num_batched_tokens`.
+    *   Reduce `asr.total_batch_duration_s` or `gpu_memory_utilization`.
+    *   Use quantized models (e.g., AWQ) or set `quantization: auto`.
+    *   Check `PYTORCH_CUDA_ALLOC_CONF` environment variable for memory optimization settings.
+-   **Multiprocessing issues**: Ensure `MULTIPROCESSING_START_METHOD=spawn` is set for CUDA compatibility.
 
 ## Documentation
 
-For all documentation, see the [docs/README.md](docs/README.md).
-
--
+For detailed documentation on all components of the system, please see the [docs/](docs/) directory.
 
 ## License
 
@@ -343,106 +123,17 @@ MIT
 
 ## OMOAI — Hướng dẫn bằng tiếng Việt
 
-Một pipeline xử lý âm thanh để nhận dạng giọng nói (ASR), chấm câu, và tóm tắt nội dung. Sử dụng `Chunkformer` cho ASR và LLM (vLLM) để chấm câu và tóm tắt.
+Một pipeline xử lý âm thanh để nhận dạng giọng nói (ASR), chấm câu, và tóm tắt nội dung, tập trung vào tiếng Việt.
 
 ### Tính năng
 
-- **ASR chất lượng cao** với dấu thời gian theo đoạn.
-- **Hỗ trợ audio dài** (hàng giờ) bằng giải mã theo khối.
-- **Chấm câu & viết hoa nâng cao**: Hệ thống chấm câu thông minh với căn chỉnh ký tự và đánh giá chất lượng.
-- **Đánh giá chất lượng**: Các chỉ số toàn diện bao gồm WER, CER, PER, U-WER, và F-WER để đánh giá độ chính xác của dấu câu.
-- **Tóm tắt**: Bullets và đoạn tóm tắt (đơn hoặc map-reduce cho văn bản dài).
-- **Cấu hình tập trung** trong `config.yaml`.
-- **Đầu ra**: luôn có `final.json`; tùy chọn xuất `transcript.txt`, `summary.txt`. Có thể tạo SRT/VTT/Markdown qua API thư viện.
-- **CLI & REST API**.
-
-### Yêu cầu
-
-- Python 3.11+
-- `ffmpeg`
-- GPU NVIDIA (khuyến nghị) cho tốc độ tốt hơn
-
-### Cài đặt
-
-```bash
-git clone <repository-url>
-cd <repository-directory>
-uv venv && source .venv/bin/activate
-uv pip install -e .
-```
-
-Chuẩn bị mô hình:
-
-- Đặt checkpoint Chunkformer tại `models/chunkformer/chunkformer-large-vie` hoặc chỉnh `paths.chunkformer_checkpoint`.
-
-### Cấu hình (`config.yaml`)
-
-- Chỉnh `paths.chunkformer_dir`, `paths.chunkformer_checkpoint`, `paths.out_dir`.
-- `asr.device: auto` sẽ ưu tiên CUDA nếu có.
-- `llm.trust_remote_code: true` chỉ bật khi tin cậy nguồn mô hình.
-- Có thể đặt biến môi trường `OMOAI_CONFIG` để trỏ đến file cấu hình khác.
-
-### Chạy nhanh (CLI)
-
-```bash
-uv run start data/input/audio.mp3
-# hoặc
-uv run python src/omoai/main.py data/input/audio.mp3
-```
-
-Chế độ tương tác:
-
-```bash
-uv run interactive
-```
-
-Thư mục kết quả nằm trong `data/output/<tên-file>-<thời-gian-UTC>/`.
-
-### REST API (Tiếng Việt)
-
-Khởi động server:
-
-```bash
-uv run api
-```
-
-Gửi yêu cầu toàn bộ pipeline (mặc định trả JSON):
-
-```bash
-curl -X POST 'http://localhost:8000/v1/pipeline' -F 'audio_file=@data/input/audio.mp3'
-```
-
-Mặc định trả về JSON. Để nhận JSON có cấu trúc và điều khiển đầu ra:
-
-```bash
-curl -X POST 'http://localhost:8000/v1/pipeline?include=segments&ts=clock&summary=both&summary_bullets_max=5' \
-  -F 'audio_file=@data/input/audio.mp3'
-```
-
-Sức khỏe hệ thống:
-
-```bash
-curl 'http://localhost:8000/v1/health'
-```
-
-### Đầu ra
-
-- Luôn có `final.json`.
-- Nếu `write_separate_files: true`, có thêm `transcript.txt`, `summary.txt`.
-- Có thể tạo SRT/VTT/Markdown bằng API thư viện (`omoai.output.writer`).
-
-### Khắc phục sự cố
-
-- **Thiếu ffmpeg**: cài đặt và đảm bảo có trong PATH.
-- **Thiếu checkpoint mô hình**: cập nhật `paths.chunkformer_checkpoint`.
-- **Lỗi bộ nhớ/CUDA OOM**:
-  - Giảm `llm.max_num_seqs`, `llm.max_num_batched_tokens`.
-  - Giảm `asr.total_batch_duration_s` hoặc `gpu_memory_utilization`.
-  - Dùng mô hình đã lượng tử hóa (AWQ), `quantization: auto`.
-- **Bảo mật**: chỉ bật `trust_remote_code` khi chắc chắn về nguồn mô hình.
-
-### Kiểm thử
-
-```bash
-uv run pytest
-```
+-   **ASR chất lượng cao**: Nhận dạng giọng nói với dấu thời gian ở cấp độ từ.
+-   **Hỗ trợ audio dài**: Xử lý các file âm thanh dài hàng giờ.
+-   **Chấm câu & viết hoa nâng cao**: Tự động chấm câu và viết hoa bằng LLM.
+-   **Tóm tắt**: Tóm tắt nội dung văn bản với dấu thời gian.
+-   **Tóm tắt có dấu thời gian**: Trích xuất chủ đề chính với dấu thời gian từ bản ghi.
+-   **Cấu hình linh hoạt**: Mọi thứ được điều khiển qua file `config.yaml`.
+-   **Nhiều định dạng đầu ra**: Hỗ trợ JSON, text, SRT, VTT, và Markdown.
+-   **CLI & REST API**: Chạy trực tiếp từ dòng lệnh hoặc như một dịch vụ web.
+-   **Phát hiện giọng nói (VAD)**: Tùy chọn VAD để bỏ qua khoảng lặng và tăng tốc độ xử lý.
+-   **Tối ưu hóa bộ nhớ CUDA**: Quản lý bộ nhớ GPU hiệu quả.

@@ -17,6 +17,7 @@ def run_postprocess_script(
     output_path: str | Path,
     config_path: str | Path | None = None,
     timeout_seconds: float | None = None,
+    timestamped_summary: bool = False,
 ) -> None:
     """
     Invoke the top-level postprocess script as a module with cwd set to project root.
@@ -47,6 +48,10 @@ def run_postprocess_script(
     if config_path:
         cmd.extend(["--config", str(config_path)])
 
+    # Add timestamped_summary flag if requested
+    if timestamped_summary:
+        cmd.append("--timestamped_summary")
+
     # Load centralized config to drive runtime toggles from config.yaml
     cfg = None
     try:
@@ -68,12 +73,12 @@ def run_postprocess_script(
                     want_verbose = True
                 elif log_cfg and str(getattr(log_cfg, "level", "")).upper() == "DEBUG":
                     want_verbose = True
-            except Exception:
-                pass
+            except Exception as err:
+                logger.debug("postprocess_wrapper: unable to read logging config", exc_info=err)
             if want_verbose:
                 cmd.append("--verbose")
-        except Exception:
-            pass
+        except Exception as err:
+            logger.debug("postprocess_wrapper: unable to apply api verbosity flags", exc_info=err)
 
     # Project root: src/omoai/api/scripts/postprocess_wrapper.py -> .../src -> project root
     project_root = Path(__file__).resolve().parents[4]
@@ -83,11 +88,31 @@ def run_postprocess_script(
     env["MULTIPROCESSING_START_METHOD"] = "spawn"
 
     # Add CUDA isolation to prevent re-initialization issues
-    env["CUDA_VISIBLE_DEVICES"] = env.get(
-        "CUDA_VISIBLE_DEVICES", "0"
-    )  # Ensure consistent GPU visibility
-    env["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"  # Force vLLM to use spawn method
-    env["TOKENIZERS_PARALLELISM"] = "false"  # Prevent tokenizer warnings in subprocess
+    env["CUDA_VISIBLE_DEVICES"] = env.get("CUDA_VISIBLE_DEVICES", "0")
+    env["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"  # vLLM multiprocessing method
+    env["TOKENIZERS_PARALLELISM"] = "false"  # Reduce tokenizer thread overhead
+
+    # Startup-time win: ensure HF cache on fast local disk to avoid repeated downloads
+    # Prefer user-provided env; otherwise default to project_root/models/hf-cache
+    try:
+        default_hf_cache = project_root / "models" / "hf-cache"
+        default_hf_cache.mkdir(parents=True, exist_ok=True)
+        env.setdefault("HF_HOME", str(default_hf_cache))
+        env.setdefault("TRANSFORMERS_CACHE", str(default_hf_cache))
+    except Exception as err:
+        logger.debug("postprocess_wrapper: unable to set default HF cache", exc_info=err)
+
+    # PyTorch CUDA allocator tuning (per PyTorch docs) to reduce fragmentation and
+    # speed up pinned memory operations during per-request launches
+    # Reference: PYTORCH_CUDA_ALLOC_CONF options (expandable_segments, gc threshold, pinned_*).
+    if "PYTORCH_CUDA_ALLOC_CONF" not in env:
+        env["PYTORCH_CUDA_ALLOC_CONF"] = (
+            "expandable_segments:True,"
+            "garbage_collection_threshold:0.8,"
+            "pinned_use_cuda_host_register:True,"
+            "pinned_num_register_threads:8,"
+            "pinned_use_background_threads:True"
+        )
 
     logger.info(f"Running postprocess command: {' '.join(cmd)}")
     logger.info(f"Working directory: {project_root}")
